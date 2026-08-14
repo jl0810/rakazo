@@ -13,6 +13,11 @@ import { builtinAgentTools, DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
 const running = new Map<string, AbortController>();
 const models = builtinModels();
 const MAX_PARALLEL_SUBAGENTS = 4;
+// Pi forwards these names to OpenAI Responses, whose function-name contract is
+// ^[a-zA-Z0-9_-]+$ with a maximum length of 64 characters.
+const AGENT_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+const MAX_AGENT_TOOL_NAME_LENGTH = 64;
+const FALLBACK_AGENT_TOOL_NAME = "connector_tool";
 
 export class PiAgentRuntime implements AgentRuntime {
   describe() {
@@ -62,7 +67,7 @@ export class PiAgentRuntime implements AgentRuntime {
           signal,
           depth: 0,
         };
-        const tools = toolDefs.map((tool) => toAgentTool(tool, host));
+        const tools = toAgentTools(toolDefs, host);
         const history = toHistory(request.history, request.prompt);
 
         const agent = new Agent({
@@ -154,6 +159,75 @@ export class PiAgentRuntime implements AgentRuntime {
   }
 }
 
+function toAgentTools(toolDefs: readonly ConnectorTool[], host: ToolHost): AgentTool[] {
+  const names = normalizeAgentToolNames(toolDefs);
+  return toolDefs.map((tool, index) => toAgentTool(tool, host, names[index]!));
+}
+
+/**
+ * Normalize connector names only at the boundary where they are exposed to Pi.
+ * Connector execution continues to use the original name captured by toAgentTool.
+ */
+export function normalizeAgentToolName(name: string): string {
+  if (isProviderSafeAgentToolName(name)) return name;
+  const normalized = name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return (normalized || FALLBACK_AGENT_TOOL_NAME).slice(0, MAX_AGENT_TOOL_NAME_LENGTH);
+}
+
+/**
+ * Return one valid, unique model-facing name per connector tool.
+ * Existing valid names are reserved first so sanitizing a connector cannot
+ * rename or shadow a builtin tool with the same valid name.
+ */
+export function normalizeAgentToolNames(tools: readonly ConnectorTool[]): string[] {
+  const reservedValidNames = new Set(
+    tools.filter((tool) => isProviderSafeAgentToolName(tool.name)).map((tool) => tool.name),
+  );
+  const usedNames = new Set<string>();
+
+  return tools.map((tool) => {
+    const base = normalizeAgentToolName(tool.name);
+    const originalIsValid = isProviderSafeAgentToolName(tool.name);
+    let candidate = base;
+
+    if (usedNames.has(candidate) || (!originalIsValid && reservedValidNames.has(candidate))) {
+      candidate = withToolNameSuffix(base, stableToolNameHash(tool.name));
+    }
+
+    let suffix = 2;
+    while (usedNames.has(candidate) || (!originalIsValid && reservedValidNames.has(candidate))) {
+      candidate = withToolNameSuffix(base, `${stableToolNameHash(tool.name)}_${suffix}`);
+      suffix += 1;
+    }
+
+    usedNames.add(candidate);
+    return candidate;
+  });
+}
+
+function isProviderSafeAgentToolName(name: string): boolean {
+  return AGENT_TOOL_NAME_PATTERN.test(name) && name.length <= MAX_AGENT_TOOL_NAME_LENGTH;
+}
+
+function withToolNameSuffix(base: string, suffix: string): string {
+  const suffixWithSeparator = `_${suffix}`;
+  const prefixLength = Math.max(1, MAX_AGENT_TOOL_NAME_LENGTH - suffixWithSeparator.length);
+  return `${base.slice(0, prefixLength)}${suffixWithSeparator}`;
+}
+
+function stableToolNameHash(name: string): string {
+  let hash = 2166136261;
+  for (const character of name) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
 function toHistory(history: AgentRunRequest["history"], prompt: string) {
   const last = history.at(-1);
   const prior = last?.role === "user" && last.content === prompt ? history.slice(0, -1) : history;
@@ -166,9 +240,9 @@ function toHistory(history: AgentRunRequest["history"], prompt: string) {
     );
 }
 
-function toAgentTool(tool: ConnectorTool, host: ToolHost): AgentTool {
+function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): AgentTool {
   return {
-    name: tool.name,
+    name: exposedName,
     label: tool.name,
     description: tool.description,
     parameters: parametersFor(tool),
@@ -293,7 +367,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
         .join(" "),
       model: host.model,
       thinkingLevel: "off",
-      tools: childDefs.map((tool) => toAgentTool(tool, nestedHost)),
+      tools: toAgentTools(childDefs, nestedHost),
       messages: [],
     },
   });
