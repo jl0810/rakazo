@@ -1058,7 +1058,7 @@ export function createRouter(deps: RouterDeps) {
 async function snapshot(deps: RouterDeps, actor: Actor, botId: string): Promise<ThreadSnapshot> {
   const bot = await createRepos(deps.prisma).getBot(actor, botId);
   if (!bot.thread) throw new IsolationError();
-  const [rows, run, last] = await Promise.all([
+  const [rows, run, last, home] = await Promise.all([
     deps.prisma.message.findMany({
       where: { threadId: bot.thread.id },
       orderBy: { seq: "asc" },
@@ -1075,6 +1075,7 @@ async function snapshot(deps: RouterDeps, actor: Actor, botId: string): Promise<
       orderBy: { seq: "desc" },
       select: { seq: true },
     }),
+    deps.prisma.agentHome.findUnique({ where: { botId }, select: { revision: true } }),
   ]);
   const liveEvents = run
     ? await deps.prisma.event.findMany({
@@ -1126,7 +1127,7 @@ async function snapshot(deps: RouterDeps, actor: Actor, botId: string): Promise<
           completedAt: run.completedAt?.toISOString() ?? null,
         }
       : null,
-    computer: await computerStatus(deps, actor, botId),
+    computer: toComputerStatus(botId, bot.computer, home?.revision ?? null),
   };
 }
 
@@ -1136,15 +1137,25 @@ async function computerStatus(
   botId: string,
 ): Promise<ComputerStatus> {
   const bot = await createRepos(deps.prisma).getBot(actor, botId);
-  const computer = bot.computer;
-  const home = await deps.prisma.agentHome.findUnique({ where: { botId } });
+  const home = await deps.prisma.agentHome.findUnique({
+    where: { botId },
+    select: { revision: true },
+  });
+  return toComputerStatus(botId, bot.computer, home?.revision ?? null);
+}
+
+function toComputerStatus(
+  botId: string,
+  computer: { kind: string; state: string; controlHolder: string } | null,
+  homeRevision: string | null,
+): ComputerStatus {
   return {
     botId,
     kind: (computer?.kind ?? "fake") as ComputerStatus["kind"],
     state: (computer?.state ?? "stopped") as ComputerStatus["state"],
     controlHolder: (computer?.controlHolder ?? "none") as ComputerStatus["controlHolder"],
     screenAvailable: computer?.state === "running" || computer?.state === "booting",
-    homeRevision: home?.revision ?? null,
+    homeRevision,
   };
 }
 

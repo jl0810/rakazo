@@ -9,13 +9,13 @@ export function sandboxIdleMs(): number {
   return Number.isFinite(raw) && raw >= 30_000 ? raw : DEFAULT_SANDBOX_IDLE_MS;
 }
 
-export function scheduleComputerSleep(jobs: JobPublisher | undefined, botId: string): void {
-  if (!jobs || !botId) return;
+export function scheduleComputerSleep(jobs: JobPublisher, botId: string): void {
+  if (!botId) return;
   void jobs.enqueue(computerSleepJob(botId, new Date(Date.now() + sandboxIdleMs())));
 }
 
 export async function touchRunningComputer(
-  deps: { sandbox: SandboxProvider; jobs?: JobPublisher },
+  deps: { sandbox: SandboxProvider; jobs: JobPublisher },
   computer: { botId: string; providerRef: string; kind: string },
 ): Promise<void> {
   scheduleComputerSleep(deps.jobs, computer.botId);
@@ -39,7 +39,7 @@ export async function sleepComputerIfIdle(
   deps: {
     prisma: PrismaClient;
     sandbox: SandboxProvider;
-    jobs?: JobPublisher;
+    jobs: JobPublisher;
     events: ThreadEvents;
   },
   botId: string,

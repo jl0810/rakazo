@@ -6,12 +6,6 @@ import { createJobReconciler } from "./job-reconciler.js";
 function publisher() {
   const enqueue = vi.fn(async (_job: BackgroundJob) => undefined);
   const jobs: JobPublisher = {
-    describe: () => ({
-      id: "test",
-      contractVersion: "1",
-      adapterVersion: "1",
-      capabilities: { delay: true, replace: true, cancel: true },
-    }),
     enqueue,
     cancel: async () => undefined,
     close: async () => undefined,

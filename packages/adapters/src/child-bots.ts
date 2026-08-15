@@ -7,6 +7,7 @@ import type {
 } from "@rakazo/adapter-kit";
 import { runContinueJob } from "@rakazo/adapter-kit";
 import type { Actor } from "@rakazo/contracts";
+import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
 import { createRepos, createThreadMessage, type PrismaClient } from "@rakazo/db";
 import { resolveAgentHomePath } from "./home.js";
 
@@ -180,7 +181,7 @@ export async function destroyBot(
   await deps.prisma.run.updateMany({
     where: {
       botId,
-      status: { in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"] },
+      status: { in: [...ACTIVE_RUN_STATUSES] },
     },
     data: { status: "cancelled", completedAt: new Date() },
   });

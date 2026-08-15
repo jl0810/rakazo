@@ -106,7 +106,6 @@ export interface ModelProvider {
 }
 
 export interface JobPublisher {
-  describe(): AdapterDescriptor<{ delay: boolean; replace: boolean; cancel: boolean }>;
   enqueue(job: BackgroundJob): Promise<void>;
   cancel(key: string): Promise<void>;
   close(): Promise<void>;

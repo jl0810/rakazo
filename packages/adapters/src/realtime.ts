@@ -144,13 +144,7 @@ export class PostgresRealtimeFanout implements RealtimeFanout {
       if (typeof envelope.topic !== "string" || typeof envelope.payload !== "string") return;
       const subscribers = this.subscribers.get(envelope.topic);
       if (!subscribers) return;
-      for (const subscriber of [...subscribers]) {
-        try {
-          subscriber(envelope.payload);
-        } catch {
-          // One broken local subscriber must not block the others.
-        }
-      }
+      this.notifySubscribers(subscribers, envelope.payload);
     } catch {
       // Ignore malformed signals. Durable events remain in the database.
     }
@@ -158,12 +152,16 @@ export class PostgresRealtimeFanout implements RealtimeFanout {
 
   private notifySubscribersToCatchUp(): void {
     for (const subscribers of this.subscribers.values()) {
-      for (const subscriber of [...subscribers]) {
-        try {
-          subscriber("");
-        } catch {
-          // One broken local subscriber must not block the others.
-        }
+      this.notifySubscribers(subscribers, "");
+    }
+  }
+
+  private notifySubscribers(subscribers: Iterable<Subscriber>, payload: string): void {
+    for (const subscriber of [...subscribers]) {
+      try {
+        subscriber(payload);
+      } catch {
+        // One broken local subscriber must not block the others.
       }
     }
   }

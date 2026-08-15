@@ -13,15 +13,6 @@ export class GraphileJobPublisher implements JobPublisher {
 
   constructor(private readonly connectionString: string) {}
 
-  describe() {
-    return {
-      id: "graphile",
-      contractVersion: "1",
-      adapterVersion: "0.2.0",
-      capabilities: { delay: true, replace: true, cancel: true },
-    };
-  }
-
   async enqueue(job: BackgroundJob): Promise<void> {
     const utils = await this.getUtils();
     await utils.addJob(job.name, job.payload, {
@@ -86,15 +77,6 @@ export class InMemoryJobQueue implements JobPublisher, JobWorkerHost {
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private readonly keyed = new Map<string, ReturnType<typeof setTimeout>>();
   private closed = false;
-
-  describe() {
-    return {
-      id: "memory",
-      contractVersion: "1",
-      adapterVersion: "0.2.0",
-      capabilities: { delay: true, replace: true, cancel: true },
-    };
-  }
 
   async enqueue(job: BackgroundJob): Promise<void> {
     if (this.closed) throw new Error("Background job publisher is closed");

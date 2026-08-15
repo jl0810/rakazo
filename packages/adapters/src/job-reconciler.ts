@@ -57,19 +57,16 @@ export function createJobReconciler(
     });
     return reconciling;
   };
+  const reconcileSafely = () => {
+    void reconcileOnce().catch((error) => console.error("background job reconciliation", error));
+  };
 
   return {
     reconcileOnce,
     start() {
       if (timer) return;
-      void reconcileOnce().catch((error) => console.error("background job reconciliation", error));
-      timer = setInterval(
-        () =>
-          void reconcileOnce().catch((error) =>
-            console.error("background job reconciliation", error),
-          ),
-        intervalMs,
-      );
+      reconcileSafely();
+      timer = setInterval(reconcileSafely, intervalMs);
       timer.unref?.();
     },
     async stop() {

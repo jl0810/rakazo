@@ -75,8 +75,8 @@ export function ShellPage() {
     const snap = await rpc.threads.get({ botId: id });
     setSnapshot(snap);
     setComputer(snap.computer);
-    const r = await rpc.routines.list({ botId: id });
-    setRoutines(r);
+    const routines = await rpc.routines.list({ botId: id });
+    setRoutines(routines);
     if (panel === "computer" || computerOpen) {
       const screen = await rpc.computer.screenUrl({ botId: id }).catch(() => ({ url: null }));
       setScreenUrl(screen.url);

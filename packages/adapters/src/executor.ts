@@ -47,6 +47,16 @@ export interface ExecutorDeps {
   jobs: JobPublisher;
 }
 
+export async function deferFutureRoutine(
+  jobs: JobPublisher,
+  routineId: string,
+  scheduledAt: Date,
+): Promise<boolean> {
+  if (scheduledAt.getTime() <= Date.now() + 1_000) return false;
+  await jobs.enqueue(routineWakeupJob(routineId, scheduledAt));
+  return true;
+}
+
 export function createRunExecutor(deps: ExecutorDeps) {
   return {
     async wakeRoutine(routineId: string, scheduledFor: string) {
@@ -54,10 +64,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       if (!Number.isFinite(scheduledAt.getTime())) return;
       const routine = await deps.prisma.routine.findUnique({ where: { id: routineId } });
       if (!routine?.active || routine.nextRunAt?.getTime() !== scheduledAt.getTime()) return;
-      if (scheduledAt.getTime() > Date.now() + 1_000) {
-        await deps.jobs.enqueue(routineWakeupJob(routineId, scheduledAt));
-        return;
-      }
+      if (await deferFutureRoutine(deps.jobs, routineId, scheduledAt)) return;
       const bot = await deps.prisma.bot.findUnique({
         where: { id: routine.botId },
         include: { thread: true },
@@ -159,13 +166,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
       let leaseValid = true;
       let lastLeaseCheckAt = 0;
       const heartbeat = setInterval(() => {
-        void deps.prisma.run
-          .updateMany({
-            where: { id: runId, leaseOwner: workerId, leaseFence: fence, status: "running" },
-            data: { leaseExpiresAt: new Date(Date.now() + 5 * 60_000) },
-          })
+        void renewRunLease(deps, runId, workerId, fence)
           .then((renewed) => {
-            if (renewed.count !== 1) leaseValid = false;
+            if (!renewed) leaseValid = false;
           })
           .catch(() => undefined);
       }, 60_000);

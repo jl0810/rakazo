@@ -12,6 +12,12 @@ const ENDPOINT_KEY = "rakazo.api_base";
 
 let cachedApiBase: string | undefined;
 
+function responseErrorMessage(body: unknown, fallback: string): string {
+  return typeof body === "object" && body && "message" in body
+    ? String((body as { message?: string }).message ?? fallback)
+    : fallback;
+}
+
 export function currentApiBase() {
   return cachedApiBase ?? defaultApiBase();
 }
@@ -74,11 +80,7 @@ export async function signIn(email: string, password: string) {
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const message =
-      typeof body === "object" && body && "message" in body
-        ? String((body as { message?: string }).message ?? "Could not sign in")
-        : "Could not sign in";
-    throw new Error(message);
+    throw new Error(responseErrorMessage(body, "Could not sign in"));
   }
   const token = tokenFromAuthResponse(res, body);
   if (!token) throw new Error("Sign-in did not return a session");
@@ -102,11 +104,7 @@ export async function deleteAccount(password: string) {
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const message =
-      typeof body === "object" && body && "message" in body
-        ? String((body as { message?: string }).message ?? "Could not delete account")
-        : "Could not delete account";
-    throw new Error(message);
+    throw new Error(responseErrorMessage(body, "Could not delete account"));
   }
   await clearSessionToken();
 }
