@@ -68,7 +68,7 @@ Confirm the product path:
 curl -s http://127.0.0.1:3100/health
 ```
 
-You want `"runtime":"pi"`, `"sandbox":"docker"`, `"wakeup":"graphile"`. `"composio":true` only if the Composio key is set.
+You want `"runtime":"pi"`, `"sandbox":"docker"`, `"jobs":"graphile"`, and `"realtime":"postgres"`. `"composio":true` only if the Composio key is set.
 
 Product defaults are Pi + Docker + Graphile. `pnpm verify:fast` pins the emulators (`AGENT_RUNTIME=scripted`, `SANDBOX_PROVIDER=fake`, `WAKEUP_DRIVER=memory`) so default tests never call live models or Composio.
 

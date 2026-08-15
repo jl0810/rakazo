@@ -1,31 +1,24 @@
-import type { SandboxProvider, WakeupDriver } from "@rakazo/adapter-kit";
-import type { PrismaClient } from "@rakazo/db";
-import { appendEvent } from "@rakazo/db";
+import { computerSleepJob, type JobPublisher, type SandboxProvider } from "@rakazo/adapter-kit";
+import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
+import type { PrismaClient, ThreadEvents } from "@rakazo/db";
 
 export const DEFAULT_SANDBOX_IDLE_MS = 10 * 60 * 1000;
-
-const ACTIVE_RUN = ["queued", "leased", "running", "waiting_input", "waiting_takeover"] as const;
 
 export function sandboxIdleMs(): number {
   const raw = Number(process.env.SANDBOX_IDLE_MS ?? DEFAULT_SANDBOX_IDLE_MS);
   return Number.isFinite(raw) && raw >= 30_000 ? raw : DEFAULT_SANDBOX_IDLE_MS;
 }
 
-export function scheduleComputerSleep(wakeup: WakeupDriver | undefined, botId: string): void {
-  if (!wakeup || !botId) return;
-  void wakeup.enqueue({
-    name: "computer.sleep",
-    payload: { botId },
-    runAt: new Date(Date.now() + sandboxIdleMs()),
-    jobKey: `computer.sleep:${botId}`,
-  });
+export function scheduleComputerSleep(jobs: JobPublisher | undefined, botId: string): void {
+  if (!jobs || !botId) return;
+  void jobs.enqueue(computerSleepJob(botId, new Date(Date.now() + sandboxIdleMs())));
 }
 
 export async function touchRunningComputer(
-  deps: { sandbox: SandboxProvider; wakeup?: WakeupDriver },
+  deps: { sandbox: SandboxProvider; jobs?: JobPublisher },
   computer: { botId: string; providerRef: string; kind: string },
 ): Promise<void> {
-  scheduleComputerSleep(deps.wakeup, computer.botId);
+  scheduleComputerSleep(deps.jobs, computer.botId);
   const sandbox = deps.sandbox as SandboxProvider & {
     keepAlive?: (ref: {
       id: string;
@@ -43,18 +36,23 @@ export async function touchRunningComputer(
 }
 
 export async function sleepComputerIfIdle(
-  deps: { prisma: PrismaClient; sandbox: SandboxProvider; wakeup?: WakeupDriver },
+  deps: {
+    prisma: PrismaClient;
+    sandbox: SandboxProvider;
+    jobs?: JobPublisher;
+    events: ThreadEvents;
+  },
   botId: string,
 ): Promise<void> {
   const computer = await deps.prisma.computer.findUnique({ where: { botId } });
   if (!computer?.providerRef) return;
   if (computer.state !== "running") return;
   const active = await deps.prisma.run.findFirst({
-    where: { botId, status: { in: [...ACTIVE_RUN] } },
+    where: { botId, status: { in: [...ACTIVE_RUN_STATUSES] } },
     select: { id: true },
   });
   if (active) {
-    scheduleComputerSleep(deps.wakeup, botId);
+    scheduleComputerSleep(deps.jobs, botId);
     return;
   }
   const ctx = {
@@ -84,7 +82,7 @@ export async function sleepComputerIfIdle(
       include: { thread: true },
     });
     if (bot?.thread) {
-      await appendEvent(deps.prisma, {
+      await deps.events.append({
         workspaceId: computer.workspaceId,
         threadId: bot.thread.id,
         botId,

@@ -1,3 +1,4 @@
+import { progressMessageId, progressMessageText } from "@rakazo/core";
 import * as SecureStore from "expo-secure-store";
 import { defaultApiBase, type EndpointResult, normalizeApiBase } from "./endpoint";
 import {
@@ -240,9 +241,13 @@ export function applyMobileThreadEvent(
 ): MobileSnapshot | null {
   if (!prev) return prev;
   if (event.type === "thread.progress") {
-    const text = String(event.payload?.text ?? "");
+    const progressId = progressMessageId(event);
+    const previous = prev.messages.find((message) => message.id === progressId);
+    const previousText =
+      previous?.blocks[0]?.kind === "progress" ? String(previous.blocks[0].text ?? "") : "";
+    const text = progressMessageText(event.payload, previousText);
     const streaming: MobileMessage = {
-      id: `progress:${event.runId ?? event.id ?? "live"}`,
+      id: progressId,
       role: "bot",
       blocks: [{ kind: "progress", text }],
     };

@@ -5,6 +5,8 @@ import type {
   AgentRuntimeCapabilities,
   AgentRuntimeEvent,
   ArtifactPut,
+  BackgroundJob,
+  BackgroundJobHandlers,
   CommandRequest,
   ComputerInput,
   ComputerRef,
@@ -29,7 +31,6 @@ import type {
   ScreenSession,
   SecretRecord,
   SnapshotRef,
-  WakeupJob,
 } from "./types.js";
 
 export interface SandboxProvider {
@@ -104,12 +105,15 @@ export interface ModelProvider {
   listModels(): Promise<Array<{ provider: string; id: string; label: string; billing: string }>>;
 }
 
-export interface WakeupDriver {
-  describe(): AdapterDescriptor<{ cron: boolean; delay: boolean }>;
-  enqueue(job: WakeupJob): Promise<void>;
-  start(
-    handlers: Record<string, (payload: Record<string, unknown>) => Promise<void>>,
-  ): Promise<void>;
+export interface JobPublisher {
+  describe(): AdapterDescriptor<{ delay: boolean; replace: boolean; cancel: boolean }>;
+  enqueue(job: BackgroundJob): Promise<void>;
+  cancel(key: string): Promise<void>;
+  close(): Promise<void>;
+}
+
+export interface JobWorkerHost {
+  start(handlers: BackgroundJobHandlers): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -143,9 +147,10 @@ export interface SecretStore {
 }
 
 export interface RealtimeFanout {
-  describe(): AdapterDescriptor<{ postgres: boolean }>;
-  publish(channel: string, payload: string): Promise<void>;
-  subscribe(channel: string, onMessage: (payload: string) => void): Promise<() => Promise<void>>;
+  describe(): AdapterDescriptor<{ distributed: boolean; push: boolean }>;
+  publish(topic: string, payload: string): Promise<void>;
+  subscribe(topic: string, onMessage: (payload: string) => void): Promise<() => Promise<void>>;
+  close(): Promise<void>;
 }
 
 export interface NotificationProvider {

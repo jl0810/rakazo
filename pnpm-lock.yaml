@@ -113,6 +113,9 @@ importers:
       '@rakazo/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@rakazo/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@rakazo/ui-tokens':
         specifier: workspace:*
         version: link:../../packages/ui-tokens
@@ -292,9 +295,6 @@ importers:
       dotenv:
         specifier: ^17.2.1
         version: 17.4.2
-      graphile-worker:
-        specifier: ^0.17.3
-        version: 0.17.3(typescript@5.9.3)
       pino:
         specifier: ^9.9.0
         version: 9.14.0
@@ -422,6 +422,9 @@ importers:
       graphile-worker:
         specifier: ^0.17.3
         version: 0.17.3(typescript@5.9.3)
+      pg:
+        specifier: ^8.16.3
+        version: 8.23.0
       pino:
         specifier: ^9.9.0
         version: 9.14.0
@@ -547,6 +550,9 @@ importers:
       '@prisma/client':
         specifier: ^7.9.1
         version: 7.9.1(prisma@7.9.1(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(magicast@0.5.4)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@5.9.3))(typescript@5.9.3)
+      '@rakazo/adapter-kit':
+        specifier: workspace:*
+        version: link:../adapter-kit
       '@rakazo/contracts':
         specifier: workspace:*
         version: link:../contracts

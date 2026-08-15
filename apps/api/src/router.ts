@@ -1,10 +1,13 @@
 import { mkdir } from "node:fs/promises";
 import { implement, ORPCError } from "@orpc/server";
-import type {
-  AgentHomeStore,
-  MemoryStore,
-  SandboxProvider,
-  WakeupDriver,
+import {
+  type AgentHomeStore,
+  type JobPublisher,
+  type MemoryStore,
+  routineJobKey,
+  routineWakeupJob,
+  runContinueJob,
+  type SandboxProvider,
 } from "@rakazo/adapter-kit";
 import {
   type ComposioConnector,
@@ -28,24 +31,23 @@ import {
   type Me,
   type ThreadSnapshot,
 } from "@rakazo/contracts";
-import { nextCronDate, projectMessages } from "@rakazo/core";
+import { ACTIVE_RUN_STATUSES, nextCronDate, projectMessages } from "@rakazo/core";
 import {
-  appendEvent,
   createRepos,
-  eventsAfter,
-  followThreadEvents,
+  createThreadMessage,
   IsolationError,
-  type Pool,
   type Prisma,
   type PrismaClient,
   requireMembership,
+  type ThreadEvents,
 } from "@rakazo/db";
 import { addScreenProxyCapability } from "./screen-proxy.js";
 
 export interface RouterDeps {
   prisma: PrismaClient;
+  events: ThreadEvents;
   auth: Auth;
-  wakeup: WakeupDriver;
+  jobs: JobPublisher;
   sandbox: SandboxProvider;
   memory: MemoryStore;
   home: AgentHomeStore;
@@ -53,7 +55,6 @@ export interface RouterDeps {
   oauthLogins: PiOAuthLogins;
   composio?: ComposioConnector;
   dataDir: string;
-  pool?: Pool;
   env: {
     defaultProvider: string;
     defaultModel: string;
@@ -239,29 +240,13 @@ export function createRouter(deps: RouterDeps) {
     },
     threads: {
       get: authed.threads.get.handler(async ({ context, input }) =>
-        snapshot(deps, context.actor, input.botId, input.afterSeq ?? -1),
+        snapshot(deps, context.actor, input.botId),
       ),
       subscribe: authed.threads.subscribe.handler(async function* ({ context, input }) {
         const bot = await repos.getBot(context.actor, input.botId);
         if (!bot.thread) throw new IsolationError();
-        for await (const event of followThreadEvents(
-          deps.prisma,
-          bot.thread.id,
-          input.cursor,
-          deps.pool,
-          context.signal,
-        )) {
-          yield {
-            id: event.id,
-            workspaceId: event.workspaceId,
-            threadId: event.threadId,
-            botId: event.botId,
-            seq: event.seq,
-            type: event.type as never,
-            runId: event.runId ?? undefined,
-            createdAt: event.createdAt.toISOString(),
-            payload: event.payload as Record<string, unknown>,
-          };
+        for await (const event of deps.events.follow(bot.thread.id, input.cursor, context.signal)) {
+          yield event;
         }
       }),
       send: authed.threads.send.handler(async ({ context, input }) => {
@@ -273,20 +258,12 @@ export function createRouter(deps: RouterDeps) {
           });
           if (dup) return { taskId: dup.taskId, runId: dup.id, seq: 0 };
         }
-        const last = await deps.prisma.message.findFirst({
-          where: { threadId: bot.thread.id },
-          orderBy: { seq: "desc" },
+        const message = await createThreadMessage(deps.prisma, {
+          threadId: bot.thread.id,
+          role: "user",
+          blocks: [{ kind: "text", text: input.text }],
         });
-        const seq = (last?.seq ?? -1) + 1;
-        await deps.prisma.message.create({
-          data: {
-            threadId: bot.thread.id,
-            seq,
-            role: "user",
-            blocks: [{ kind: "text", text: input.text }],
-          },
-        });
-        await appendEvent(deps.prisma, {
+        await deps.events.append({
           workspaceId: context.actor.workspaceId,
           threadId: bot.thread.id,
           botId: bot.id,
@@ -323,36 +300,42 @@ export function createRouter(deps: RouterDeps) {
           },
           data: { status: "cancelled", completedAt: new Date() },
         });
-        await deps.wakeup.enqueue({ name: "run.continue", payload: { runId: run.id } });
-        return { taskId: task.id, runId: run.id, seq };
+        await deps.jobs.enqueue(runContinueJob(run.id));
+        return { taskId: task.id, runId: run.id, seq: message.seq };
       }),
       stop: authed.threads.stop.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
+        const activeRuns = await deps.prisma.run.findMany({
+          where: {
+            botId: bot.id,
+            status: { in: [...ACTIVE_RUN_STATUSES] },
+          },
+          select: { id: true },
+        });
         await deps.prisma.run.updateMany({
           where: {
             botId: bot.id,
-            status: { in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"] },
+            status: { in: [...ACTIVE_RUN_STATUSES] },
           },
           data: { status: "cancelled", completedAt: new Date() },
+        });
+        await deps.prisma.event.deleteMany({
+          where: {
+            type: "thread.progress",
+            runId: { in: activeRuns.map((run) => run.id) },
+          },
         });
         return { ok: true as const };
       }),
       followUp: authed.threads.followUp.handler(async ({ context, input }) => {
         const bot = await repos.getBot(context.actor, input.botId);
         if (!bot.thread) throw new IsolationError();
-        const last = await deps.prisma.message.findFirst({
-          where: { threadId: bot.thread.id },
-          orderBy: { seq: "desc" },
+        await createThreadMessage(deps.prisma, {
+          threadId: bot.thread.id,
+          role: "user",
+          blocks: [{ kind: "text", text: input.text }],
         });
-        await deps.prisma.message.create({
-          data: {
-            threadId: bot.thread.id,
-            seq: (last?.seq ?? -1) + 1,
-            role: "user",
-            blocks: [{ kind: "text", text: input.text }],
-          },
-        });
-        await appendEvent(deps.prisma, {
+        await deps.events.append({
           workspaceId: context.actor.workspaceId,
           threadId: bot.thread.id,
           botId: bot.id,
@@ -384,7 +367,7 @@ export function createRouter(deps: RouterDeps) {
             trigger: "follow_up",
           },
         });
-        await deps.wakeup.enqueue({ name: "run.continue", payload: { runId: run.id } });
+        await deps.jobs.enqueue(runContinueJob(run.id));
         return { ok: true as const };
       }),
       answer: authed.threads.answer.handler(async ({ context, input }) => {
@@ -397,7 +380,7 @@ export function createRouter(deps: RouterDeps) {
           where: { runs: { some: { id: input.runId } } },
           data: { prompt: input.answer },
         });
-        await deps.wakeup.enqueue({ name: "run.continue", payload: { runId: input.runId } });
+        await deps.jobs.enqueue(runContinueJob(input.runId));
         return { ok: true as const };
       }),
     },
@@ -431,7 +414,7 @@ export function createRouter(deps: RouterDeps) {
             where: { botId: bot.id },
             data: { state: "running", providerRef: ref.providerRef, kind: ref.kind },
           });
-          scheduleComputerSleep(deps.wakeup, bot.id);
+          scheduleComputerSleep(deps.jobs, bot.id);
         } catch (error) {
           await deps.prisma.computer.update({ where: { botId: bot.id }, data: { state: "error" } });
           throw error;
@@ -471,7 +454,7 @@ export function createRouter(deps: RouterDeps) {
           data: { controlHolder: "user", controlLeaseId: leaseId, state: "running" },
         });
         if (bot.thread) {
-          await appendEvent(deps.prisma, {
+          await deps.events.append({
             workspaceId: context.actor.workspaceId,
             threadId: bot.thread.id,
             botId: bot.id,
@@ -483,9 +466,8 @@ export function createRouter(deps: RouterDeps) {
           where: { botId: bot.id, status: "waiting_takeover" },
           orderBy: { createdAt: "desc" },
         });
-        if (waiting)
-          await deps.wakeup.enqueue({ name: "run.continue", payload: { runId: waiting.id } });
-        scheduleComputerSleep(deps.wakeup, bot.id);
+        if (waiting) await deps.jobs.enqueue(runContinueJob(waiting.id));
+        scheduleComputerSleep(deps.jobs, bot.id);
         return { leaseId, expiresAt: new Date(Date.now() + 15 * 60_000).toISOString() };
       }),
       release: authed.computer.release.handler(async ({ context, input }) => {
@@ -494,7 +476,7 @@ export function createRouter(deps: RouterDeps) {
           where: { botId: bot.id },
           data: { controlHolder: "bot", controlLeaseId: null },
         });
-        scheduleComputerSleep(deps.wakeup, bot.id);
+        scheduleComputerSleep(deps.jobs, bot.id);
         return { ok: true as const };
       }),
       input: authed.computer.input.handler(async ({ context, input }) => {
@@ -531,7 +513,7 @@ export function createRouter(deps: RouterDeps) {
             signal: new AbortController().signal,
           },
         );
-        scheduleComputerSleep(deps.wakeup, bot.id);
+        scheduleComputerSleep(deps.jobs, bot.id);
         return { ok: true as const };
       }),
       files: authed.computer.files.handler(async ({ context, input }) => {
@@ -580,7 +562,7 @@ export function createRouter(deps: RouterDeps) {
           },
         );
         if (!session.url) return { url: null };
-        scheduleComputerSleep(deps.wakeup, bot.id);
+        scheduleComputerSleep(deps.jobs, bot.id);
         const viewUrl = withViewOnly(session.url, bot.computer.controlHolder !== "user");
         return {
           url: addScreenProxyCapability(viewUrl, deps.env.screenProxySecret, deps.env.webOrigin),
@@ -590,7 +572,7 @@ export function createRouter(deps: RouterDeps) {
         const bot = await repos.getBot(context.actor, input.botId);
         if (bot.computer?.state === "running" && bot.computer.providerRef) {
           await touchRunningComputer(
-            { sandbox: deps.sandbox, wakeup: deps.wakeup },
+            { sandbox: deps.sandbox, jobs: deps.jobs },
             {
               botId: bot.id,
               providerRef: bot.computer.providerRef,
@@ -675,7 +657,7 @@ export function createRouter(deps: RouterDeps) {
         return rows.map(mapRoutine);
       }),
       create: authed.routines.create.handler(async ({ context, input }) => {
-        await repos.getBot(context.actor, input.botId);
+        const bot = await repos.getBot(context.actor, input.botId);
         const row = await deps.prisma.routine.create({
           data: {
             workspaceId: context.actor.workspaceId,
@@ -690,9 +672,8 @@ export function createRouter(deps: RouterDeps) {
             nextRunAt: input.active ? nextCronDate(input.cron, new Date(), input.timezone) : null,
           },
         });
-        const bot = await repos.getBot(context.actor, input.botId);
         if (bot.thread) {
-          await appendEvent(deps.prisma, {
+          await deps.events.append({
             workspaceId: context.actor.workspaceId,
             threadId: bot.thread.id,
             botId: bot.id,
@@ -701,12 +682,7 @@ export function createRouter(deps: RouterDeps) {
           });
         }
         if (row.active && row.nextRunAt) {
-          await deps.wakeup.enqueue({
-            name: "routine.wakeup",
-            payload: { routineId: row.id },
-            runAt: row.nextRunAt,
-            jobKey: `routine:${row.id}`,
-          });
+          await deps.jobs.enqueue(routineWakeupJob(row.id, row.nextRunAt));
         }
         return mapRoutine(row);
       }),
@@ -719,6 +695,18 @@ export function createRouter(deps: RouterDeps) {
           },
         });
         if (!existing) throw new IsolationError();
+        const active = input.active ?? existing.active;
+        const cron = input.cron ?? existing.cron;
+        const timezone = input.timezone ?? existing.timezone;
+        const scheduleChanged =
+          (!existing.active && active) ||
+          (input.cron !== undefined && input.cron !== existing.cron) ||
+          (input.timezone !== undefined && input.timezone !== existing.timezone);
+        const nextRunAt = !active
+          ? null
+          : scheduleChanged || !existing.nextRunAt
+            ? nextCronDate(cron, new Date(), timezone)
+            : existing.nextRunAt;
         const row = await deps.prisma.routine.update({
           where: { id: existing.id },
           data: {
@@ -728,8 +716,30 @@ export function createRouter(deps: RouterDeps) {
             timezone: input.timezone,
             active: input.active,
             notify: input.notify,
+            nextRunAt,
           },
         });
+        const bot = await repos.getBot(context.actor, row.botId);
+        if (bot.thread) {
+          await deps.events.append({
+            workspaceId: context.actor.workspaceId,
+            threadId: bot.thread.id,
+            botId: bot.id,
+            type: "routine.updated",
+            payload: { routineId: row.id, active: row.active },
+          });
+        }
+        const scheduleNeedsSync =
+          existing.active !== row.active ||
+          scheduleChanged ||
+          (!existing.nextRunAt && !!row.nextRunAt);
+        if (scheduleNeedsSync) {
+          if (row.active && row.nextRunAt) {
+            await deps.jobs.enqueue(routineWakeupJob(row.id, row.nextRunAt));
+          } else {
+            await deps.jobs.cancel(routineJobKey(row.id));
+          }
+        }
         return mapRoutine(row);
       }),
       remove: authed.routines.remove.handler(async ({ context, input }) => {
@@ -738,6 +748,7 @@ export function createRouter(deps: RouterDeps) {
         });
         if (!existing) throw new IsolationError();
         await deps.prisma.routine.delete({ where: { id: existing.id } });
+        await deps.jobs.cancel(routineJobKey(existing.id));
         return { ok: true as const };
       }),
       testRun: authed.routines.testRun.handler(async ({ context, input }) => {
@@ -768,7 +779,7 @@ export function createRouter(deps: RouterDeps) {
             trigger: "routine",
           },
         });
-        await deps.wakeup.enqueue({ name: "run.continue", payload: { runId: run.id } });
+        await deps.jobs.enqueue(runContinueJob(run.id));
         return { runId: run.id };
       }),
     },
@@ -997,7 +1008,7 @@ export function createRouter(deps: RouterDeps) {
         const bots = await repos.listBots(context.actor);
         const bot = bots.find((b) => b.id === input.botId);
         if (!bot) throw new IsolationError();
-        const snap = await snapshot(deps, context.actor, input.botId, -1);
+        const snap = await snapshot(deps, context.actor, input.botId);
         const memory = await deps.prisma.memoryDocument.findMany({
           where: { botId: input.botId, workspaceId: context.actor.workspaceId },
         });
@@ -1044,20 +1055,38 @@ export function createRouter(deps: RouterDeps) {
   });
 }
 
-async function snapshot(
-  deps: RouterDeps,
-  actor: Actor,
-  botId: string,
-  afterSeq: number,
-): Promise<ThreadSnapshot> {
+async function snapshot(deps: RouterDeps, actor: Actor, botId: string): Promise<ThreadSnapshot> {
   const bot = await createRepos(deps.prisma).getBot(actor, botId);
   if (!bot.thread) throw new IsolationError();
-  const events = await eventsAfter(deps.prisma, bot.thread.id, afterSeq);
-  const projected = projectMessages(events);
-  const rows = await deps.prisma.message.findMany({
-    where: { threadId: bot.thread.id, seq: { gt: afterSeq } },
-    orderBy: { seq: "asc" },
-  });
+  const [rows, run, last] = await Promise.all([
+    deps.prisma.message.findMany({
+      where: { threadId: bot.thread.id },
+      orderBy: { seq: "asc" },
+    }),
+    deps.prisma.run.findFirst({
+      where: {
+        botId,
+        status: { in: [...ACTIVE_RUN_STATUSES] },
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+    deps.prisma.event.findFirst({
+      where: { threadId: bot.thread.id },
+      orderBy: { seq: "desc" },
+      select: { seq: true },
+    }),
+  ]);
+  const liveEvents = run
+    ? await deps.prisma.event.findMany({
+        where: {
+          threadId: bot.thread.id,
+          runId: run.id,
+          type: { in: ["thread.progress", "thread.subagent"] },
+        },
+        orderBy: { seq: "asc" },
+      })
+    : [];
+  const projected = projectMessages(liveEvents);
   const persisted = rows.map((row) => ({
     id: row.id,
     threadId: row.threadId,
@@ -1076,18 +1105,7 @@ async function snapshot(
       ),
     );
   });
-  const messages = persisted.length || live.length ? [...persisted, ...live] : projected;
-  const run = await deps.prisma.run.findFirst({
-    where: {
-      botId,
-      status: { in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"] },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-  const last = await deps.prisma.event.findFirst({
-    where: { threadId: bot.thread.id },
-    orderBy: { seq: "desc" },
-  });
+  const messages = [...persisted, ...live];
   return {
     botId,
     threadId: bot.thread.id,

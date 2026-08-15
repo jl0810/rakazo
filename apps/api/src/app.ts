@@ -1,27 +1,30 @@
 import { rm } from "node:fs/promises";
 import { RPCHandler } from "@orpc/server/fetch";
-import type { SandboxProvider, WakeupDriver } from "@rakazo/adapter-kit";
+import type { JobPublisher, RealtimeFanout, SandboxProvider } from "@rakazo/adapter-kit";
 import {
   type ComposioConnector,
+  createBackgroundJobHandlers,
   createConnectorStack,
+  createJobReconciler,
   createRunExecutor,
   createRunSandbox,
   type DestinationEmulator,
   destroyBot,
   EncryptedSecretStore,
   ExpoPushProvider,
-  GraphileWakeupDriver,
-  InMemoryWakeupDriver,
+  GraphileJobPublisher,
+  InMemoryJobQueue,
+  InMemoryRealtimeFanout,
   isComposioEnabled,
   LocalAgentHomeStore,
   PiAgentRuntime,
   PiOAuthLogins,
+  PostgresRealtimeFanout,
   pushTokenPath,
   ScriptedAgentRuntime,
-  sleepComputerIfIdle,
 } from "@rakazo/adapters";
 import { blockedAuthPaths, createAuth } from "@rakazo/auth";
-import { createDb, type PrismaClient, requireMembership } from "@rakazo/db";
+import { createDb, createThreadEvents, type PrismaClient, requireMembership } from "@rakazo/db";
 import { MarkdownMemoryStore } from "@rakazo/memory";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -31,7 +34,7 @@ import { createRouter } from "./router.js";
 export interface AppHandles {
   app: Hono;
   prisma: PrismaClient;
-  wakeup: WakeupDriver;
+  jobs: JobPublisher;
   sandbox: SandboxProvider;
   connector: DestinationEmulator;
   composio?: ComposioConnector;
@@ -40,7 +43,7 @@ export interface AppHandles {
 }
 
 export async function createApp(
-  overrides: Partial<AppEnv> & { prisma?: PrismaClient } = {},
+  overrides: Partial<AppEnv> & { prisma?: PrismaClient; realtime?: RealtimeFanout } = {},
 ): Promise<AppHandles> {
   const env = { ...loadEnv(process.env), ...overrides };
   const created = overrides.prisma
@@ -48,17 +51,24 @@ export async function createApp(
     : createDb(env.databaseUrl);
   const { prisma } = created;
   created.pool?.on("error", () => undefined);
+  const realtime =
+    overrides.realtime ??
+    (created.pool
+      ? new PostgresRealtimeFanout({
+          connectionString: env.realtimeDatabaseUrl,
+          publisher: created.pool,
+        })
+      : new InMemoryRealtimeFanout());
+  const events = createThreadEvents(prisma, realtime);
   await prisma.deploymentSettings.upsert({
     where: { id: "default" },
     create: { id: "default" },
     update: {},
   });
 
-  const wakeupKind = env.wakeupDriver;
-  const wakeup =
-    wakeupKind === "memory"
-      ? new InMemoryWakeupDriver()
-      : new GraphileWakeupDriver(env.databaseUrl);
+  const jobKind = env.wakeupDriver;
+  const inMemoryJobs = jobKind === "memory" ? new InMemoryJobQueue() : undefined;
+  const jobs = inMemoryJobs ?? new GraphileJobPublisher(env.databaseUrl);
   const sandbox: SandboxProvider = createRunSandbox(env.sandboxProvider, {
     supervisorUrl: env.sandboxSupervisorUrl,
     supervisorToken: env.sandboxSupervisorToken,
@@ -124,27 +134,29 @@ export async function createApp(
     deploymentModelKey: env.openRouterKey,
     dataDir: env.dataDir,
     notifications,
-    wakeup,
+    jobs,
+    events,
   });
 
-  if (wakeupKind !== "graphile") {
-    await wakeup.start({
-      "run.continue": async (payload) => {
-        await executor.continueRun(String(payload.runId), "api");
-      },
-      "routine.wakeup": async (payload) => {
-        await executor.wakeRoutine(String(payload.routineId), "api");
-      },
-      "computer.sleep": async (payload) => {
-        await sleepComputerIfIdle({ prisma, sandbox, wakeup }, String(payload.botId));
-      },
-    });
+  const jobHandlers = createBackgroundJobHandlers({
+    executor,
+    prisma,
+    sandbox,
+    jobs,
+    events,
+    workerId: "api",
+  });
+  if (inMemoryJobs) {
+    await inMemoryJobs.start(jobHandlers);
   }
+  const reconciler = inMemoryJobs ? createJobReconciler({ prisma, jobs }) : undefined;
+  reconciler?.start();
 
   const router = createRouter({
     prisma,
+    events,
     auth,
-    wakeup,
+    jobs,
     sandbox,
     memory,
     home,
@@ -152,7 +164,6 @@ export async function createApp(
     oauthLogins,
     composio: stack.composio,
     dataDir: env.dataDir,
-    pool: created.pool,
     env: {
       defaultProvider: env.defaultProvider,
       defaultModel: env.defaultModel,
@@ -199,21 +210,24 @@ export async function createApp(
       runtime: env.agentRuntime,
       sandbox: env.sandboxProvider,
       composio: Boolean(stack.composio),
-      wakeup: wakeupKind,
+      jobs: jobKind,
+      realtime: realtime.describe().id,
     }),
   );
 
   return {
     app,
     prisma,
-    wakeup,
+    jobs,
     sandbox,
     connector,
     composio: stack.composio,
     executor,
     stop: async () => {
       oauthLogins.abortAll();
-      await wakeup.stop();
+      await reconciler?.stop();
+      await jobs.close();
+      await realtime.close();
       await connector.stop();
       await prisma.$disconnect().catch(() => undefined);
       await created.pool?.end().catch(() => undefined);

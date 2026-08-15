@@ -210,12 +210,26 @@ export interface AgentRuntimeCapabilities {
   scripted: boolean;
 }
 
-export interface WakeupJob {
-  name: string;
-  payload: Record<string, unknown>;
-  runAt?: Date;
-  jobKey?: string;
+export interface BackgroundJobPayloads {
+  "run.continue": { runId: string };
+  "routine.wakeup": { routineId: string; scheduledFor: string };
+  "computer.sleep": { botId: string };
 }
+
+export type BackgroundJobName = keyof BackgroundJobPayloads;
+
+export type BackgroundJob = {
+  [Name in BackgroundJobName]: {
+    name: Name;
+    payload: BackgroundJobPayloads[Name];
+    availableAt?: Date;
+    replaceKey?: string;
+  };
+}[BackgroundJobName];
+
+export type BackgroundJobHandlers = {
+  [Name in BackgroundJobName]: (payload: BackgroundJobPayloads[Name]) => Promise<void>;
+};
 
 export interface SecretRecord {
   id: string;

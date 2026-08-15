@@ -6,31 +6,15 @@ import {
   FakeSandboxProvider,
   ManagedSandboxEmulator,
 } from "@rakazo/adapters";
+import { appendEvent, createThreadMessage } from "@rakazo/db";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 type App = { request: (input: string, init?: RequestInit) => Promise<Response> };
-
-function loadDatabaseUrl() {
-  const file = path.resolve(".env");
-  if (!existsSync(file) || process.env.DATABASE_URL) return;
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq < 1) continue;
-    const key = trimmed.slice(0, eq);
-    if (key !== "DATABASE_URL") continue;
-    process.env.DATABASE_URL = trimmed.slice(eq + 1);
-    return;
-  }
-}
-
-loadDatabaseUrl();
 process.env.WAKEUP_DRIVER = "memory";
 process.env.SANDBOX_PROVIDER = "fake";
 process.env.AGENT_RUNTIME = "scripted";
 
-const hasDb = Boolean(process.env.DATABASE_URL);
+const hasDb = process.env.VERIFY_DATABASE === "1" && Boolean(process.env.DATABASE_URL);
 const describeJourneys = hasDb ? describe : describe.skip;
 
 describeJourneys("required product journeys", () => {
@@ -45,9 +29,7 @@ describeJourneys("required product journeys", () => {
   let executor: Awaited<
     ReturnType<typeof import("../../../apps/api/src/app.ts").createApp>
   >["executor"];
-  let wakeup: Awaited<
-    ReturnType<typeof import("../../../apps/api/src/app.ts").createApp>
-  >["wakeup"];
+  let jobs: Awaited<ReturnType<typeof import("../../../apps/api/src/app.ts").createApp>>["jobs"];
   const stamp = Date.now();
   const dataDir = mkdtempSync(path.join(tmpdir(), "rakazo-journey-"));
 
@@ -64,11 +46,11 @@ describeJourneys("required product journeys", () => {
     prisma = handles.prisma;
     connector = handles.connector;
     executor = handles.executor;
-    wakeup = handles.wakeup;
+    jobs = handles.jobs;
   });
 
   afterAll(async () => {
-    await stop();
+    await stop?.();
   });
 
   it("1+2: two users are isolated and two bots keep separate homes", async () => {
@@ -148,7 +130,7 @@ describeJourneys("required product journeys", () => {
       [...snap.messages].map((m) => m.seq).sort((a, b) => a - b),
     );
     expect(snap.messages.some((m) => JSON.stringify(m.blocks).includes("reconnect-ok"))).toBe(true);
-    const again = await rpc<Snap>(app, cookie, "threads/get", { botId: bot.id, afterSeq: -1 });
+    const again = await rpc<Snap>(app, cookie, "threads/get", { botId: bot.id });
     expect(again.messages.length).toBe(snap.messages.length);
   });
 
@@ -193,16 +175,34 @@ describeJourneys("required product journeys", () => {
       instructions: "",
       notifyOnFinish: true,
     });
-    const routine = await rpc<{ id: string }>(app, cookie, "routines/create", {
-      botId: bot.id,
-      name: "Monday briefing",
-      prompt: "write a file in your home called notes/result.txt that says routine-ok",
-      cron: "0 9 * * 1",
-      timezone: "UTC",
-      notify: true,
-      active: true,
+    const routine = await rpc<{ id: string; nextRunAt: string | null }>(
+      app,
+      cookie,
+      "routines/create",
+      {
+        botId: bot.id,
+        name: "Monday briefing",
+        prompt: "write a file in your home called notes/result.txt that says routine-ok",
+        cron: "0 9 * * 1",
+        timezone: "UTC",
+        notify: true,
+        active: true,
+      },
+    );
+    expect(routine.nextRunAt).toBeTruthy();
+    const dueAt = new Date(Date.now() - 1_000);
+    await prisma.routine.update({
+      where: { id: routine.id },
+      data: { nextRunAt: dueAt },
     });
-    await wakeup.enqueue({ name: "routine.wakeup", payload: { routineId: routine.id } });
+    await jobs.enqueue({
+      name: "routine.wakeup",
+      payload: { routineId: routine.id, scheduledFor: dueAt.toISOString() },
+    });
+    await jobs.enqueue({
+      name: "routine.wakeup",
+      payload: { routineId: routine.id, scheduledFor: dueAt.toISOString() },
+    });
     const snap = await waitFor(app, cookie, bot.id, (s) =>
       s.messages.some(
         (m) =>
@@ -211,6 +211,53 @@ describeJourneys("required product journeys", () => {
       ),
     );
     expect(snap.messages.length).toBeGreaterThan(0);
+    const routineRuns = await prisma.run.count({
+      where: { botId: bot.id, trigger: "routine" },
+    });
+    expect(routineRuns).toBe(1);
+    const advanced = await prisma.routine.findUniqueOrThrow({ where: { id: routine.id } });
+    expect(advanced.nextRunAt?.getTime()).toBeGreaterThan(dueAt.getTime());
+  });
+
+  it("allocates event and message cursors atomically under concurrent writes", async () => {
+    const cookie = await signup(app, `sequence-j-${stamp}@rakazo.test`, "Sequence");
+    const actor = await rpc<Me>(app, cookie, "me");
+    const bot = await rpc<Bot>(app, cookie, "bots/create", {
+      name: "Sequencer",
+      title: "",
+      description: "",
+      instructions: "",
+      notifyOnFinish: false,
+    });
+    const thread = await prisma.thread.findUniqueOrThrow({ where: { botId: bot.id } });
+
+    await Promise.all(
+      Array.from({ length: 40 }, (_, index) =>
+        appendEvent(prisma, {
+          workspaceId: actor.workspaceId,
+          threadId: thread.id,
+          botId: bot.id,
+          type: "thread.progress",
+          payload: { delta: String(index) },
+        }),
+      ),
+    );
+    await Promise.all(
+      Array.from({ length: 40 }, (_, index) =>
+        createThreadMessage(prisma, {
+          threadId: thread.id,
+          role: "system",
+          blocks: [{ kind: "meta", text: String(index) }],
+        }),
+      ),
+    );
+
+    const [events, messages] = await Promise.all([
+      prisma.event.findMany({ where: { threadId: thread.id }, orderBy: { seq: "asc" } }),
+      prisma.message.findMany({ where: { threadId: thread.id }, orderBy: { seq: "asc" } }),
+    ]);
+    expect(events.map((row) => row.seq)).toEqual(Array.from({ length: 40 }, (_, i) => i));
+    expect(messages.map((row) => row.seq)).toEqual(Array.from({ length: 40 }, (_, i) => i));
   });
 
   it("6: fake, managed-sandbox emulator, and desktop executor run the same graphical task", async () => {
