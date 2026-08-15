@@ -31,6 +31,9 @@ import {
   InMemoryWakeupDriver,
   isComposioEnabled,
   LocalAgentHomeStore,
+  DevinAgentRuntime,
+  DevinAcpRuntime,
+  DevinCliRuntime,
   PiAgentRuntime,
   ScriptedAgentRuntime,
   sleepComputerIfIdle,
@@ -44,7 +47,13 @@ async function main() {
   if (!databaseUrl) throw new Error("DATABASE_URL is required");
   const { prisma } = createDb(databaseUrl);
   const runtime =
-    process.env.AGENT_RUNTIME === "scripted" ? new ScriptedAgentRuntime() : new PiAgentRuntime();
+    process.env.AGENT_RUNTIME === "scripted"
+      ? new ScriptedAgentRuntime()
+      : process.env.AGENT_RUNTIME === "devin"
+        ? new DevinAgentRuntime({ apiKey: process.env.DEVIN_API_KEY!, orgId: process.env.DEVIN_ORG_ID! })
+        : process.env.AGENT_RUNTIME === "devin-cli"
+          ? new DevinAcpRuntime()
+          : new PiAgentRuntime();
   const dataDir = process.env.DATA_DIR ?? "./data";
   const sandbox = createRunSandbox(process.env.SANDBOX_PROVIDER ?? "docker", {
     supervisorUrl: process.env.SANDBOX_SUPERVISOR_URL ?? "http://127.0.0.1:7091",

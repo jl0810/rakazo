@@ -9,9 +9,15 @@ import type {
   ConnectorTool,
 } from "@rakazo/adapter-kit";
 import { builtinAgentTools, DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
+import { createDevinCliProvider } from "./devin-cli-provider.js";
 
 const running = new Map<string, AbortController>();
 const models = builtinModels();
+
+// Register the Devin CLI provider so PiAgentRuntime can use GLM-5.2
+const devinCliProvider = createDevinCliProvider();
+(models as any).setProvider(devinCliProvider.provider);
+
 const MAX_PARALLEL_SUBAGENTS = 4;
 // Pi forwards these names to OpenAI Responses, whose function-name contract is
 // ^[a-zA-Z0-9_-]+$ with a maximum length of 64 characters.

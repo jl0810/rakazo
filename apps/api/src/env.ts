@@ -15,6 +15,8 @@ export interface AppEnv {
   sandboxProvider: string;
   agentRuntime: string;
   openRouterKey: string | undefined;
+  devinApiKey: string | undefined;
+  devinOrgId: string | undefined;
   e2bApiKey: string | undefined;
   composioApiKey: string | undefined;
   defaultProvider: string;
@@ -40,6 +42,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     sandboxProvider: source.SANDBOX_PROVIDER ?? "docker",
     agentRuntime: source.AGENT_RUNTIME ?? "pi",
     openRouterKey: source.OPENROUTER_API_KEY,
+    devinApiKey: source.DEVIN_API_KEY,
+    devinOrgId: source.DEVIN_ORG_ID,
     e2bApiKey: source.E2B_API_KEY,
     composioApiKey: source.COMPOSIO_API_KEY,
     defaultProvider: source.PI_DEFAULT_PROVIDER ?? "openrouter",

@@ -4,9 +4,9 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
+    "dev": "NODE_OPTIONS='--import tsx/esm' vite",
+    "build": "NODE_OPTIONS='--import tsx/esm' vite build",
+    "preview": "NODE_OPTIONS='--import tsx/esm' vite preview",
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run --root ../.. apps/web/src",
     "e2e": "playwright test"

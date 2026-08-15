@@ -12,6 +12,9 @@ import {
   InMemoryWakeupDriver,
   isComposioEnabled,
   LocalAgentHomeStore,
+  DevinAgentRuntime,
+  DevinAcpRuntime,
+  DevinCliRuntime,
   PiAgentRuntime,
   PiOAuthLogins,
   ScriptedAgentRuntime,
@@ -88,7 +91,13 @@ export async function createApp(
   await connector.start();
   void stack.composio?.warmDirectory().catch(() => undefined);
   const runtime =
-    env.agentRuntime === "scripted" ? new ScriptedAgentRuntime() : new PiAgentRuntime();
+    env.agentRuntime === "scripted"
+      ? new ScriptedAgentRuntime()
+      : env.agentRuntime === "devin"
+        ? new DevinAgentRuntime({ apiKey: env.devinApiKey!, orgId: env.devinOrgId! })
+        : env.agentRuntime === "devin-cli"
+          ? new DevinAcpRuntime()
+          : new PiAgentRuntime();
   const notifications = new ExpoPushProvider(env.dataDir);
   const executor = createRunExecutor({
     prisma,
