@@ -30,5 +30,7 @@ artifacts
 backups
 verify-report
 .astro
+.deploy.lock
+.last-deployed-revision
 design/
 PRODUCT_PLAN.md
