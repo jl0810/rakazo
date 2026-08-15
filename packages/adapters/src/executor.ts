@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import type {
   AgentHomeStore,
+  AgentModelOAuthCredential,
   AgentRuntime,
   ComputerRef,
   ConnectorProvider,
@@ -32,10 +33,17 @@ import {
   restoreComputerWorkspace,
 } from "./computer-workspace.js";
 import { resolveAgentHomePath } from "./home.js";
-import { parseModelSecret, resolveModelApiKey, secretValuesToRedact } from "./pi-oauth.js";
+import { toOAuthCredential } from "./pi-credentials.js";
+import {
+  parseModelSecret,
+  resolveModelAuth,
+  secretValuesToRedact,
+  serializeModelSecret,
+} from "./pi-oauth.js";
 import { inferScript } from "./scripted-runtime.js";
 import type { EncryptedSecretStore } from "./secrets.js";
 
+const modelCredentialLocks = new Map<string, Promise<void>>();
 const READ_ONLY_AGENT_TOOLS = new Set([
   "computer_observe",
   "list_files",
@@ -243,7 +251,6 @@ export function createRunExecutor(deps: ExecutorDeps) {
           content: blocksToText(m.blocks as MessageBlock[]),
         }));
         const resolved = await resolveModelKey(deps, run.userId, run.workspaceId, credential);
-        const apiKey = resolved.apiKey;
         const runSecrets = [...deps.secrets, ...resolved.redact];
         const computer = await ensureComputer(deps, bot.id, context);
         const graphical =
@@ -566,7 +573,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
               model: {
                 provider: credential?.provider ?? settings?.defaultModelProvider ?? "scripted",
                 id: credential?.defaultModel ?? settings?.defaultModelId ?? "scripted",
-                apiKey,
+                apiKey: resolved.oauth ? undefined : resolved.apiKey,
+                oauth: resolved.oauth
+                  ? { credential: resolved.oauth, persist: resolved.persistOAuth }
+                  : undefined,
               },
               resumeFromCheckpoint: resumeFromTakeover ? "takeover" : undefined,
               script,
@@ -1103,31 +1113,88 @@ async function resolveModelKey(
   userId: string,
   workspaceId: string,
   credential: { secretId: string; provider: string } | null,
-): Promise<{ apiKey?: string; redact: string[] }> {
+): Promise<{
+  apiKey?: string;
+  oauth?: AgentModelOAuthCredential;
+  persistOAuth?: (credential: AgentModelOAuthCredential) => Promise<void>;
+  redact: string[];
+}> {
   if (credential && deps.secretStore) {
-    const row = await deps.prisma.secret.findUnique({ where: { id: credential.secretId } });
-    if (row) {
-      const plaintext = deps.secretStore.load(row.ciphertext);
-      const parsed = parseModelSecret(plaintext);
-      const apiKey = await resolveModelApiKey(plaintext, credential.provider, {
-        persist: async (next) => {
-          const stored = await deps.secretStore!.put(next, {
-            operationId: "cred",
-            traceId: "cred-refresh",
-            workspaceId,
-            userId,
-            signal: new AbortController().signal,
-          });
-          await deps.prisma.secret.update({
-            where: { id: row.id },
-            data: { ciphertext: stored.ciphertext },
-          });
-        },
+    return withModelCredentialLock(credential.secretId, async () => {
+      const row = await deps.prisma.secret.findUnique({ where: { id: credential.secretId } });
+      if (!row) return { apiKey: deps.deploymentModelKey, redact: [] };
+      const plaintext = deps.secretStore!.load(row.ciphertext);
+      const persist = async (next: string) => {
+        const stored = await deps.secretStore!.put(next, {
+          operationId: "cred",
+          traceId: "cred-refresh",
+          workspaceId,
+          userId,
+          signal: new AbortController().signal,
+        });
+        await deps.prisma.secret.update({
+          where: { id: row.id },
+          data: { ciphertext: stored.ciphertext },
+        });
+      };
+      const resolved = await resolveModelAuth(plaintext, credential.provider, {
+        persist,
       });
-      return { apiKey, redact: [...secretValuesToRedact(parsed), apiKey] };
-    }
+      const oauth = resolved.secret.kind === "oauth" ? resolved.secret.credential : undefined;
+      return {
+        apiKey: resolved.apiKey,
+        oauth,
+        persistOAuth: oauth
+          ? async (next) => {
+              await withModelCredentialLock(credential.secretId, async () => {
+                const currentRow = await deps.prisma.secret.findUnique({
+                  where: { id: credential.secretId },
+                });
+                if (!currentRow) return;
+                const current = parseModelSecret(deps.secretStore!.load(currentRow.ciphertext));
+                if (current.kind === "oauth") {
+                  const stored = current.credential;
+                  if (stored.expires > next.expires) return;
+                  if (
+                    stored.access === next.access &&
+                    stored.refresh === next.refresh &&
+                    stored.expires === next.expires
+                  ) {
+                    return;
+                  }
+                }
+                await persist(
+                  serializeModelSecret({ kind: "oauth", credential: toOAuthCredential(next) }),
+                );
+              });
+            }
+          : undefined,
+        redact: [...secretValuesToRedact(resolved.secret), resolved.apiKey].filter(
+          (value): value is string => Boolean(value),
+        ),
+      };
+    });
   }
   return { apiKey: deps.deploymentModelKey, redact: [] };
+}
+
+async function withModelCredentialLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = modelCredentialLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = previous.then(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+  );
+  modelCredentialLocks.set(key, current);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (modelCredentialLocks.get(key) === current) modelCredentialLocks.delete(key);
+  }
 }
 
 function blocksToText(blocks: MessageBlock[]): string {

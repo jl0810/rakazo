@@ -1,5 +1,5 @@
 import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
-import { Type } from "@earendil-works/pi-ai";
+import { type Api, type Model, type Models, Type } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
   AdapterContext,
@@ -10,9 +10,10 @@ import type {
   ConnectorTool,
 } from "@rakazo/adapter-kit";
 import { builtinAgentTools, DELEGATION_TOOL_NAMES } from "./builtin-tools.js";
+import { PiRuntimeCredentialStore, toOAuthCredential } from "./pi-credentials.js";
 
 const running = new Map<string, AbortController>();
-const models = builtinModels();
+const catalogModels = builtinModels();
 const MAX_PARALLEL_SUBAGENTS = 4;
 // Pi forwards these names to OpenAI Responses, whose function-name contract is
 // ^[a-zA-Z0-9_-]+$ with a maximum length of 64 characters.
@@ -48,6 +49,7 @@ export class PiAgentRuntime implements AgentRuntime {
           request.model.id === "scripted"
             ? (process.env.PI_DEFAULT_MODEL ?? "deepseek/deepseek-v4-flash-0731")
             : request.model.id;
+        const models = modelsForRequest(request, provider);
         const model = models.getModel(provider, modelId) ?? models.getModel("openrouter", modelId);
         if (!model) {
           queue.push({ type: "text", text: `Unknown model ${provider}/${modelId}` });
@@ -55,12 +57,15 @@ export class PiAgentRuntime implements AgentRuntime {
           return;
         }
 
-        const apiKey = request.model.apiKey ?? process.env.OPENROUTER_API_KEY;
+        const apiKey = request.model.oauth
+          ? undefined
+          : (request.model.apiKey ?? process.env.OPENROUTER_API_KEY);
         const toolDefs = request.tools.length ? request.tools : builtinAgentTools;
         const nestedAgents = new Set<Agent>();
         const host: ToolHost = {
           queue,
           request,
+          models,
           model,
           apiKey,
           nestedAgents,
@@ -161,6 +166,20 @@ export class PiAgentRuntime implements AgentRuntime {
       running.delete(request.runId);
     }
   }
+}
+
+function modelsForRequest(request: AgentRunRequest, provider: string): Models {
+  const oauth = request.model.oauth;
+  if (!oauth) return catalogModels;
+
+  const persist = oauth.persist;
+  return builtinModels({
+    credentials: new PiRuntimeCredentialStore(
+      provider,
+      toOAuthCredential(oauth.credential),
+      persist ? (next) => persist(next) : undefined,
+    ),
+  });
 }
 
 function toAgentTools(toolDefs: readonly ConnectorTool[], host: ToolHost): AgentTool[] {
@@ -376,7 +395,7 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
   );
   const nestedHost: ToolHost = { ...host, depth: 1 };
   const nested = new Agent({
-    streamFn: (m, ctx, options) => models.streamSimple(m, ctx, options),
+    streamFn: (m, ctx, options) => host.models.streamSimple(m, ctx, options),
     getApiKey: async () => host.apiKey,
     transformContext: async (messages) => pruneComputerScreenshotContext(messages),
     initialState: {
@@ -662,7 +681,8 @@ interface EventQueue {
 interface ToolHost {
   queue: EventQueue;
   request: AgentRunRequest;
-  model: NonNullable<ReturnType<typeof models.getModel>>;
+  models: Models;
+  model: Model<Api>;
   apiKey: string | undefined;
   nestedAgents: Set<Agent>;
   subagentGate: { acquire(): Promise<void>; release(): void };

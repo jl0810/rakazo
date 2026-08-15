@@ -18,6 +18,19 @@ export interface AdapterDescriptor<TCapabilities> {
   capabilities: TCapabilities;
 }
 
+/**
+ * In-process OAuth material for a single agent run. Not part of any RPC or
+ * persisted contract. Extra provider fields such as `accountId` are copied
+ * through at runtime.
+ */
+export interface AgentModelOAuthCredential {
+  type: "oauth";
+  access: string;
+  refresh: string;
+  expires: number;
+  accountId?: string;
+}
+
 export interface PortableFile {
   path: string;
   content: Uint8Array;
@@ -213,7 +226,16 @@ export interface AgentRunRequest {
   instructions: string;
   history: Array<{ role: "user" | "assistant" | "system"; content: string }>;
   tools: ConnectorTool[];
-  model: { provider: string; id: string; apiKey?: string };
+  model: {
+    provider: string;
+    id: string;
+    apiKey?: string;
+    /** In-process OAuth credential from the encrypted store for this run. */
+    oauth?: {
+      credential: AgentModelOAuthCredential;
+      persist?: (credential: AgentModelOAuthCredential) => Promise<void>;
+    };
+  };
   resumeFromCheckpoint?: string;
   script?: ScriptedTurn[];
   executeTool?: (
