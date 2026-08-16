@@ -1,8 +1,8 @@
 import { ChatMarkdown } from "@rakazo/chat-ui/native";
 import { abortableDelay } from "@rakazo/core";
-import { Link, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { Link, useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { AppState, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { NativeSymbol } from "../components/native-symbol";
 import {
   applyMobileThreadEvent,
@@ -60,6 +60,25 @@ export default function Thread() {
     }
   }
 
+  const markReadIfVisible = useCallback(() => {
+    if (!botId || AppState.currentState !== "active" || !navigation.isFocused()) return;
+    void rpc("threads/markRead", { botId }).catch(() => undefined);
+  }, [botId, navigation]);
+
+  // Covers returning from a pushed screen; the AppState listener covers returning from background.
+  useFocusEffect(
+    useCallback(() => {
+      markReadIfVisible();
+    }, [markReadIfVisible]),
+  );
+
+  useEffect(() => {
+    const appState = AppState.addEventListener("change", (state) => {
+      if (state === "active") markReadIfVisible();
+    });
+    return () => appState.remove();
+  }, [markReadIfVisible]);
+
   useEffect(() => {
     if (!botId) return;
     expandedHistoryThread.current = null;
@@ -87,6 +106,9 @@ export default function Thread() {
               ) {
                 setSnap((prev) => applyMobileThreadEvent(prev, event));
               }
+              if (event.type === "thread.message.created" && event.payload?.role === "bot") {
+                markReadIfVisible();
+              }
               if (event.type === "run.completed") {
                 void refresh().catch(() => undefined);
               }
@@ -105,7 +127,7 @@ export default function Thread() {
     return () => {
       abort.abort();
     };
-  }, [botId]);
+  }, [botId, markReadIfVisible]);
 
   async function send() {
     if (!botId || !draft.trim()) return;
