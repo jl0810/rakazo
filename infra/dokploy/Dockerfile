@@ -34,7 +34,7 @@ COPY infra/dokploy/mcp_config.json /root/.config/devin/mcp_config.json
 WORKDIR /app
 
 # Copy lockfile and workspace config first for cache
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json tsconfig.base.json ./
 COPY packages/ ./packages/
 COPY apps/ ./apps/
 COPY infra/ ./infra/
