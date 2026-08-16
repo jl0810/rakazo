@@ -2,7 +2,7 @@
   "mcpServers": {
     "dokploy": {
       "command": "/usr/local/bin/node",
-      "args": ["/opt/sysadmin/build/index.js"],
+      "args": ["/opt/dokploy-mcp/build/index.js"],
       "env": {
         "DOKPLOY_API_KEY": "CSeAXrkJutMwAhrDVWINvmtSmUAoVkgBpjwmWHUUPQbAVuEuHOHQqkJOwWngRKue",
         "DOKPLOY_URL": "http://100.81.25.91:3000/api"

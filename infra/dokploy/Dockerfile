@@ -22,9 +22,9 @@ RUN curl -fsSL https://cli.devin.ai/install.sh -o /tmp/devin-install.sh \
 # Enable pnpm
 RUN corepack enable
 
-# Clone and build dokploy-mcp from sysadmin repo
-RUN git clone --depth 1 https://github.com/jl0810/sysadmin.git /opt/sysadmin \
-    && cd /opt/sysadmin && npm install && npm run build \
+# Build dokploy-mcp from local copy
+COPY infra/dokploy/dokploy-mcp/ /opt/dokploy-mcp/
+RUN cd /opt/dokploy-mcp && npm install && npm run build \
     && chmod 755 build/index.js
 
 # Write Devin MCP config with Linux paths
