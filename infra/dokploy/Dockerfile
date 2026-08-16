@@ -1,12 +1,11 @@
 FROM node:22-bookworm
 
 # Install system deps:
-# - bwrap + socat: Devin CLI sandbox
 # - curl + git: Devin CLI install + cloning MCP repos
 # - python3 + pip: postgres-mcp via uvx
 # - ca-certificates: TLS for API calls
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bwrap socat curl ca-certificates git \
+    curl ca-certificates git \
     python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
