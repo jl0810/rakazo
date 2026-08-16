@@ -28,6 +28,15 @@ services:
       - dokploy
     ports:
       - "3100:3100"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=dokploy-network"
+      - "traefik.http.routers.rakazo-api-rpc.rule=Host(`rakazo.raydoug.com`) && (PathPrefix(`/api`) || PathPrefix(`/rpc`))"
+      - "traefik.http.routers.rakazo-api-rpc.entrypoints=websecure"
+      - "traefik.http.routers.rakazo-api-rpc.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.rakazo-api-rpc.priority=100"
+      - "traefik.http.routers.rakazo-api-rpc.service=rakazo-api-svc"
+      - "traefik.http.services.rakazo-api-svc.loadbalancer.server.port=3100"
 
   worker:
     build:
