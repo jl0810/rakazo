@@ -17,7 +17,8 @@ ENV PATH="/root/.local/bin:$PATH"
 RUN curl -fsSL https://cli.devin.ai/install.sh -o /tmp/devin-install.sh \
     && sed -i 's|.*COMPILED_BIN_NAME. setup||g' /tmp/devin-install.sh \
     && bash /tmp/devin-install.sh \
-    && rm /tmp/devin-install.sh
+    && rm /tmp/devin-install.sh \
+    && ln -sf /root/.local/bin/devin /usr/local/bin/devin
 
 # Enable pnpm
 RUN corepack enable
