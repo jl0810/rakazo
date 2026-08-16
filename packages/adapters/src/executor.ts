@@ -218,6 +218,94 @@ export function createRunExecutor(deps: ExecutorDeps) {
           return { ok: true };
         }
         if (name === "request_takeover") return { ok: true };
+        if (name === "create_routine") {
+          const routineName = String(args.name ?? "").trim();
+          const routinePrompt = String(args.prompt ?? "").trim();
+          const cron = String(args.cron ?? "").trim();
+          const timezone = String(args.timezone ?? "UTC").trim() || "UTC";
+          if (!routineName || !routinePrompt || !cron) {
+            return { error: "create_routine requires name, prompt, and cron." };
+          }
+          if (cron.split(/\s+/).length < 5) {
+            return { error: `Invalid cron expression "${cron}". Use 5 fields, e.g. '0 9 * * *'.` };
+          }
+          const row = await deps.prisma.routine.create({
+            data: {
+              workspaceId: run.workspaceId,
+              botId: bot.id,
+              userId: run.userId,
+              name: routineName,
+              prompt: routinePrompt,
+              cron,
+              timezone,
+              notify: true,
+              active: true,
+              nextRunAt: nextCronDate(cron, new Date(), timezone),
+            },
+          });
+          if (row.nextRunAt) {
+            await deps.wakeup?.enqueue({
+              name: "routine.wakeup",
+              payload: { routineId: row.id },
+              runAt: row.nextRunAt,
+              jobKey: `routine:${row.id}`,
+            });
+          }
+          await publishMessage(deps, actor, thread.id, bot.id, runId, "bot", [
+            { kind: "meta", text: `Created routine ◷ ${row.name}` },
+          ]);
+          await appendEvent(deps.prisma, {
+            workspaceId: run.workspaceId,
+            threadId: thread.id,
+            botId: bot.id,
+            runId: run.id,
+            type: "routine.created",
+            payload: { name: row.name },
+          });
+          const created = {
+            ok: true,
+            routineId: row.id,
+            name: row.name,
+            cron: row.cron,
+            nextRunAt: row.nextRunAt?.toISOString() ?? null,
+          };
+          await completeEffect(deps, applied.effect.id, created);
+          return created;
+        }
+        if (name === "list_routines") {
+          const rows = await deps.prisma.routine.findMany({
+            where: { botId: bot.id, workspaceId: run.workspaceId },
+            orderBy: { createdAt: "asc" },
+          });
+          return {
+            ok: true,
+            routines: rows.map((row) => ({
+              name: row.name,
+              prompt: row.prompt,
+              cron: row.cron,
+              timezone: row.timezone,
+              active: row.active,
+              nextRunAt: row.nextRunAt?.toISOString() ?? null,
+            })),
+          };
+        }
+        if (name === "delete_routine") {
+          const routineName = String(args.name ?? "").trim();
+          if (!routineName) return { error: "delete_routine requires name." };
+          const existing = await deps.prisma.routine.findFirst({
+            where: { botId: bot.id, workspaceId: run.workspaceId, name: routineName },
+          });
+          if (!existing) {
+            return { error: `This bot has no routine named "${routineName}".` };
+          }
+          await deps.prisma.routine.delete({ where: { id: existing.id } });
+          await publishMessage(deps, actor, thread.id, bot.id, runId, "bot", [
+            { kind: "meta", text: `Deleted routine ◷ ${existing.name}` },
+          ]);
+          const removed = { ok: true, name: existing.name };
+          await completeEffect(deps, applied.effect.id, removed);
+          return removed;
+        }
         if (name === "run_subagent") {
           return {
             ok: true,
@@ -327,6 +415,23 @@ export function createRunExecutor(deps: ExecutorDeps) {
           ? `Connected plugins: ${connectedPlugins.map((row) => `${row.displayName} (${row.provider})`).join(", ")}. Use those plugin tools when the user asks about those apps.`
           : "No plugins are connected yet.";
 
+      // Load bot memory for persistent recall across sessions
+      let memoryLine = "";
+      try {
+        const memSnapshot = await deps.memory.read(
+          { scope: "bot", botId: bot.id },
+          context,
+        );
+        if (memSnapshot.documents.length > 0) {
+          const memText = memSnapshot.documents
+            .map((doc) => `### ${doc.path}\n${doc.content}`)
+            .join("\n\n");
+          memoryLine = `Persistent memory (use and update with the remember tool):\n\n${memText}`;
+        }
+      } catch {
+        // memory read failed — continue without recall
+      }
+
       try {
         for await (const event of deps.runtime.run(
           {
@@ -336,11 +441,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
             prompt: task.prompt,
             instructions: [
               bot.instructions || `${bot.name}: ${bot.title}\n${bot.description}`,
+              memoryLine,
               "You have a persistent computer. Use write_file to save files into your home (they appear in Files). Use shell to run commands in that computer. Use remember for durable facts. Use request_takeover when the user must type on the screen. Use destination.write only for connected destination records.",
               "A bot and a subagent are different. Never use both for the same request.",
               "spawn_bot creates a lasting regular bot (own chat, computer, memory) that appears in the user's bot list. If the user asked to create a bot, call spawn_bot once and stop. Do not run_subagent to demo it.",
               "run_subagent is a short helper inside this turn only. It is not a bot, has no thread, and does not show in the list. Use it for parallel work you will summarize here.",
               "delete_bot permanently destroys a bot this bot created, and only that bot. Only delete when the user asked or that bot is finished and unused. confirm_name must exactly match its name.",
+              "When the user asks for recurring or scheduled work (nightly, every morning, weekly), call create_routine with a clear prompt and cron schedule instead of doing the work once. Use list_routines to check what already exists and delete_routine only when the user asks.",
               pluginLine,
               "Never print API keys, access tokens, or secret values. Prefer tools over claiming you already did the work.",
             ].join("\n\n"),
@@ -543,6 +650,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const stack = error instanceof Error ? error.stack : "";
+        process.stderr.write(`[executor] RUN FAILED: ${message}\n${stack}\n`);
         await deps.prisma.run.update({
           where: { id: runId },
           data: { status: "failed", error: message, completedAt: new Date() },
