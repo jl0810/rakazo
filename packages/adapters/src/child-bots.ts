@@ -8,7 +8,13 @@ import type {
 import { runContinueJob } from "@rakazo/adapter-kit";
 import type { Actor, Bot } from "@rakazo/contracts";
 import { ACTIVE_RUN_STATUSES } from "@rakazo/core";
-import { createRepos, createThreadMessageInTransaction, type PrismaClient } from "@rakazo/db";
+import {
+  computerScopeKey,
+  createRepos,
+  createThreadMessageInTransaction,
+  type PrismaClient,
+} from "@rakazo/db";
+import { toComputerRef } from "./computer-support.js";
 import { resolveAgentHomePath } from "./home.js";
 
 export function confirmSpawnedBotName(confirmName: string, botName: string) {
@@ -242,9 +248,11 @@ export async function destroyBot(
 ) {
   const bot = await deps.prisma.bot.findUnique({
     where: { id: botId },
-    include: { computer: true },
   });
   if (!bot) return;
+  const dedicated = await deps.prisma.computer.findUnique({
+    where: { scopeKey: computerScopeKey("dedicated", bot.workspaceId, botId) },
+  });
   await deps.prisma.run.updateMany({
     where: {
       botId,
@@ -252,22 +260,17 @@ export async function destroyBot(
     },
     data: { status: "cancelled", completedAt: new Date() },
   });
-  if (bot.computer?.providerRef) {
-    await deps.sandbox
-      .destroy(
-        {
-          id: bot.computer.providerRef,
-          botId,
-          kind: bot.computer.kind as never,
-          providerRef: bot.computer.providerRef,
-        },
-        context,
-      )
-      .catch(() => undefined);
+  if (dedicated?.providerRef) {
+    await deps.sandbox.destroy(toComputerRef(dedicated), context).catch(() => undefined);
+  }
+  if (dedicated) {
+    await deps.prisma.computer.delete({ where: { id: dedicated.id } }).catch(() => undefined);
   }
   await deps.prisma.bot.delete({ where: { id: botId } }).catch(() => undefined);
-  await rm(resolveAgentHomePath(deps.home, botId, deps.dataDir ?? "./data"), {
-    recursive: true,
-    force: true,
-  }).catch(() => undefined);
+  if (dedicated) {
+    await rm(resolveAgentHomePath(deps.home, dedicated.homeKey, deps.dataDir ?? "./data"), {
+      recursive: true,
+      force: true,
+    }).catch(() => undefined);
+  }
 }
