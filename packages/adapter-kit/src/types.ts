@@ -62,6 +62,8 @@ export interface ScreenRequest {
   view: "stream" | "snapshot";
   /** Request a separately authorized control stream instead of the read-only viewer. */
   interactive?: boolean;
+  /** Fences an interactive stream so an older lease cannot revoke its replacement. */
+  controlToken?: string;
 }
 
 export interface ScreenSession {
@@ -287,6 +289,7 @@ export interface BackgroundJobPayloads {
   "run.continue": { runId: string };
   "routine.wakeup": { routineId: string; scheduledFor: string };
   "computer.sleep": { botId: string };
+  "computer.control-expire": { botId: string; leaseId: string };
 }
 
 export type BackgroundJobName = keyof BackgroundJobPayloads;

@@ -28,6 +28,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { authClient } from "../lib/auth";
 import { rpc } from "../lib/rpc";
 import {
+  isComputerStatusEvent,
   mergeThreadSnapshot,
   prependThreadMessagePage,
   reduceComputerStatus,
@@ -77,8 +78,13 @@ export function ShellPage() {
   const expandedHistoryThread = useRef<string | null>(null);
   const messageScroll = useRef<HTMLDivElement>(null);
   const manuallyUnread = useRef(new Set<string>());
+  const computerVisible = useRef(false);
+  computerVisible.current = panel === "computer" || computerOpen;
 
   const active = bots.find((b) => b.id === botId) ?? bots[0];
+  const activeBotId = useRef<string | undefined>(active?.id);
+  activeBotId.current = active?.id;
+  const screenRequest = useRef(0);
   const contextBot = botMenu ? bots.find((bot) => bot.id === botMenu.botId) : undefined;
   const closeBotMenu = useCallback(() => setBotMenu(null), []);
   const updateBotUnread = useCallback((id: string, unread: boolean) => {
@@ -147,10 +153,7 @@ export function ShellPage() {
     setComputer(snap.computer);
     const routines = await rpc.routines.list({ botId: id });
     setRoutines(routines);
-    if (panel === "computer" || computerOpen) {
-      const screen = await rpc.computer.screenUrl({ botId: id }).catch(() => ({ url: null }));
-      setScreenUrl(screen.url);
-    }
+    await refreshComputerScreen(id);
     if (stickToEnd) {
       window.requestAnimationFrame(() => {
         const element = messageScroll.current;
@@ -158,6 +161,20 @@ export function ShellPage() {
       });
     }
     return snap;
+  }
+
+  async function refreshComputerScreen(id: string) {
+    if (!computerVisible.current) return;
+    const request = ++screenRequest.current;
+    const screen = await rpc.computer.screenUrl({ botId: id }).catch(() => ({ url: null }));
+    if (
+      request !== screenRequest.current ||
+      activeBotId.current !== id ||
+      !computerVisible.current
+    ) {
+      return;
+    }
+    setScreenUrl(screen.url);
   }
 
   async function loadOlderMessages() {
@@ -205,6 +222,8 @@ export function ShellPage() {
 
   useEffect(() => {
     if (!active) return;
+    screenRequest.current += 1;
+    setScreenUrl(null);
     expandedHistoryThread.current = null;
     const abort = new AbortController();
     void (async () => {
@@ -237,12 +256,10 @@ export function ShellPage() {
               }
               if (event.payload.role === "bot") markBotReadIfVisible(active.id);
             }
-            if (
-              event.type === "run.completed" ||
-              event.type === "computer.status" ||
-              event.type === "computer.takeover.granted"
-            ) {
+            if (event.type === "run.completed") {
               void refreshThread(active.id).catch(() => undefined);
+            } else if (isComputerStatusEvent(event)) {
+              void refreshComputerScreen(active.id).catch(() => undefined);
             }
           }
         } catch {
@@ -991,7 +1008,7 @@ function applyThreadEvent(
   ) {
     setSnapshot((prev) => reduceThreadSnapshot(prev, event));
   }
-  if (event.type === "computer.status" || event.type === "computer.takeover.granted") {
+  if (isComputerStatusEvent(event)) {
     setComputer((prev) => reduceComputerStatus(prev, event));
   }
 }
