@@ -1,5 +1,12 @@
 import { expect, type Page, test } from "@playwright/test";
-import { captureScreenshot, completeOnboarding, signup } from "./helpers";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  realSandboxTimeout,
+  rpc,
+  signup,
+} from "./helpers";
 
 test("Team Computer gives bots a home folder plus shared space while Private stays isolated", async ({
   page,
@@ -53,6 +60,7 @@ test("Team Computer gives bots a home folder plus shared space while Private sta
     privateId,
     `write a file in your home called notes/result.txt that says ${privateMarker}`,
   );
+  await expect(readFile(page, privateId, "notes/result.txt")).resolves.toContain(privateMarker);
   await expect(readFileResponse(page, chiefId, "notes/result.txt")).resolves.toMatchObject({
     ok: false,
   });
@@ -90,7 +98,10 @@ test("user control blocks another Team bot until the computer is released", asyn
   await page.getByRole("button", { name: "Close computer" }).click();
 
   await openBot(page, "Worker");
-  await sendMessage(page, `write a file in your home called notes/result.txt that says ${marker}`);
+  const workerRunId = await sendMessage(
+    page,
+    `write a file in your home called notes/result.txt that says ${marker}`,
+  );
 
   await expect
     .poll(async () => (await threadSnapshot(page, workerId)).run?.status ?? "idle", {
@@ -117,7 +128,7 @@ test("user control blocks another Team bot until the computer is released", asyn
   await expect(page.getByText("You have control", { exact: true })).toBeVisible();
   await release.click();
 
-  await waitForRun(page, workerId);
+  await waitForRun(page, workerId, workerRunId);
   await expect(readFile(page, workerId, "notes/result.txt")).resolves.toContain(marker);
   await expect(readFileResponse(page, chiefId, "notes/result.txt")).resolves.toMatchObject({
     ok: false,
@@ -156,7 +167,7 @@ test("an active Team bot must be stopped before user takeover", async ({ page },
     .toBe("running");
 
   await rpc(page, "threads/stop", { botId: chiefId });
-  await waitForRun(page, chiefId);
+  await waitForIdle(page, chiefId);
   await expect
     .poll(async () => (await rpcResponse(page, "computer/takeover", { botId: chiefId })).ok)
     .toBe(true);
@@ -215,8 +226,8 @@ async function openComputerPanel(page: Page) {
 }
 
 async function sendAndWait(page: Page, botId: string, text: string) {
-  await sendMessage(page, text);
-  await waitForRun(page, botId);
+  const runId = await sendMessage(page, text);
+  await waitForRun(page, botId, runId);
 }
 
 async function sendMessage(page: Page, text: string) {
@@ -227,25 +238,42 @@ async function sendMessage(page: Page, text: string) {
       response.url().includes("/rpc/threads/send") && response.request().method() === "POST",
   );
   await page.keyboard.press("Enter");
-  expect((await sent).ok()).toBe(true);
+  const response = await sent;
+  expect(response.ok()).toBe(true);
+  const result = (await response.json()) as { json?: { runId?: string } };
+  if (!result.json?.runId) throw new Error("threads/send did not return a run id");
+  return result.json.runId;
 }
 
-async function waitForRun(page: Page, botId: string) {
+async function waitForRun(page: Page, botId: string, runId: string) {
+  await expect
+    .poll(
+      async () => {
+        const snapshot = await threadSnapshot(page, botId);
+        if (snapshot.run?.id === runId) return false;
+        return snapshot.messages.some((message) => message.runId === runId);
+      },
+      {
+        timeout: realSandboxTimeout(90_000, 20_000),
+        message: `run ${runId} must finish before its result is inspected`,
+      },
+    )
+    .toBe(true);
+}
+
+async function waitForIdle(page: Page, botId: string) {
   await expect
     .poll(async () => (await threadSnapshot(page, botId)).run?.status ?? "idle", {
-      timeout: 20_000,
+      timeout: realSandboxTimeout(90_000, 20_000),
     })
     .toBe("idle");
 }
 
-function activeBotId(page: Page) {
-  const id = new URL(page.url()).pathname.split("/").filter(Boolean).at(-1);
-  if (!id || id === "app") throw new Error(`missing bot id in ${page.url()}`);
-  return id;
-}
-
 function threadSnapshot(page: Page, botId: string) {
-  return rpc<{ run: { status: string } | null }>(page, "threads/get", { botId });
+  return rpc<{
+    run: { id: string; status: string } | null;
+    messages: Array<{ runId?: string | null }>;
+  }>(page, "threads/get", { botId });
 }
 
 async function readFile(page: Page, botId: string, path: string) {
@@ -260,13 +288,4 @@ async function readFileResponse(page: Page, botId: string, path: string) {
 async function rpcResponse(page: Page, procedure: string, body: unknown) {
   const response = await page.request.post(`/rpc/${procedure}`, { data: { json: body } });
   return { ok: response.ok(), status: response.status() };
-}
-
-async function rpc<T>(page: Page, procedure: string, body: unknown): Promise<T> {
-  const response = await page.request.post(`/rpc/${procedure}`, { data: { json: body } });
-  const parsed = (await response.json()) as { json?: T; error?: { message?: string } };
-  if (!response.ok() || parsed.error) {
-    throw new Error(`${procedure} ${response.status()}: ${parsed.error?.message ?? "failed"}`);
-  }
-  return parsed.json as T;
 }

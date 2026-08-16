@@ -1,5 +1,12 @@
-import { expect, test } from "@playwright/test";
-import { captureScreenshot, completeOnboarding, signup } from "./helpers";
+import { expect, type Page, test } from "@playwright/test";
+import {
+  activeBotId,
+  captureScreenshot,
+  completeOnboarding,
+  realSandboxTimeout,
+  rpc,
+  signup,
+} from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
@@ -47,6 +54,12 @@ test("takeover, routine, plugins, and export are reachable", async ({ page }, te
   await expect(page.getByText(/sign in to continue|protected input/i).first()).toBeVisible({
     timeout: 30_000,
   });
+  await expect
+    .poll(() => threadRunStatus(page), {
+      timeout: realSandboxTimeout(90_000, 30_000),
+      message: "the protected-input run must be ready for takeover",
+    })
+    .toBe("waiting_takeover");
   await captureScreenshot(page, testInfo, "08-protected-input-request");
   await page.getByTitle("Agent computer").click();
   await page.getByRole("button", { name: "Take control" }).click();
@@ -111,7 +124,7 @@ test("sign-in, spawn, and stop work in the shell", async ({ page }, testInfo) =>
   await page.keyboard.press("Enter");
   await expect(page.getByText("still working").first()).toBeVisible({ timeout: 30_000 });
   await captureScreenshot(page, testInfo, "14-active-bot-work");
-  await page.getByRole("button", { name: "Stop" }).click();
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
   await expect(page.getByRole("button", { name: "Send" })).toBeVisible({ timeout: 30_000 });
 
   await page.context().clearCookies();
@@ -172,3 +185,10 @@ test("bot context menu pins, duplicates, edits, and confirms deletion", async ({
   await expect(page.locator("label:has-text('Name') input")).toHaveValue("Chief");
   await captureScreenshot(page, testInfo, "19-edit-profile");
 });
+
+async function threadRunStatus(page: Page) {
+  const result = await rpc<{ run?: { status?: string } | null }>(page, "threads/get", {
+    botId: activeBotId(page),
+  });
+  return result.run?.status ?? "idle";
+}
