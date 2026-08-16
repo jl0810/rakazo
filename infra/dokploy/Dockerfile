@@ -13,8 +13,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
-# Install Devin CLI (Linux binary)
-RUN curl -fsSL https://cli.devin.ai/install.sh | bash
+# Install Devin CLI (Linux binary) — strip interactive 'devin setup' from installer
+RUN curl -fsSL https://cli.devin.ai/install.sh -o /tmp/devin-install.sh \
+    && sed -i '/setup/d' /tmp/devin-install.sh \
+    && bash /tmp/devin-install.sh \
+    && rm /tmp/devin-install.sh
 
 # Enable pnpm
 RUN corepack enable
