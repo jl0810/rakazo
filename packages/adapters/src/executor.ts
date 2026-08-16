@@ -79,9 +79,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
     },
 
     async continueRun(runId: string, workerId: string) {
+      console.error(`[executor] continueRun called for runId=${runId} workerId=${workerId}`);
       const run = await deps.prisma.run.findUnique({ where: { id: runId } });
-      if (!run) return;
-      if (["completed", "failed", "cancelled"].includes(run.status)) return;
+      if (!run) { console.error(`[executor] run not found: ${runId}`); return; }
+      if (["completed", "failed", "cancelled"].includes(run.status)) { console.error(`[executor] run already ${run.status}: ${runId}`); return; }
       const resumeFromTakeover = run.status === "waiting_takeover";
 
       const fence = run.leaseFence + 1;
@@ -161,7 +162,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
       const settings = await deps.prisma.deploymentSettings.findUnique({
         where: { id: "default" },
       });
+      console.error(`[executor] discovered tools, connector=${!!deps.connector}`);
       const discovered = deps.connector ? await deps.connector.discoverTools(context) : [];
+      console.error(`[executor] discovered ${discovered.length} tools`);
       const tools = [
         ...builtinAgentTools,
         ...discovered.filter((tool) => !builtinAgentTools.some((b) => b.name === tool.name)),
