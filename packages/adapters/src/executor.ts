@@ -433,6 +433,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       }
 
       try {
+        process.stderr.write(`[executor] starting runtime.run for runId=${runId}\n`);
         for await (const event of deps.runtime.run(
           {
             botId: bot.id,
@@ -467,6 +468,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
           const still = await deps.prisma.run.findUnique({ where: { id: runId } });
           if (!still || still.status === "cancelled") return;
 
+          if (!event || event.type === undefined) {
+            process.stderr.write(`[executor] WARNING: event is undefined or missing type for runId=${runId}\n`);
+            continue;
+          }
           if (event.type === "text") {
             assembled += event.text;
             const now = Date.now();
@@ -656,14 +661,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           where: { id: runId },
           data: { status: "failed", error: message, completedAt: new Date() },
         });
-        await appendEvent(deps.prisma, {
-          workspaceId: run.workspaceId,
-          threadId: thread.id,
-          botId: bot.id,
-          type: "run.failed",
-          runId,
-          payload: { error: message },
-        });
+        // Notify the user BEFORE recording the failure event. If appendEvent
+        // throws (e.g. the seq race), the user still gets the failure push —
+        // a recording failure must never silence the notification.
         if (bot.notifyOnFinish) {
           await notifyRun(deps, run, {
             kind: "failure",
@@ -673,6 +673,20 @@ export function createRunExecutor(deps: ExecutorDeps) {
             threadId: thread.id,
           });
         }
+        await appendEvent(deps.prisma, {
+          workspaceId: run.workspaceId,
+          threadId: thread.id,
+          botId: bot.id,
+          type: "run.failed",
+          runId,
+          payload: { error: message },
+        }).catch((recordError) => {
+          process.stderr.write(
+            `[executor] failed to record run.failed event: ${
+              recordError instanceof Error ? recordError.message : String(recordError)
+            }\n`,
+          );
+        });
       }
     },
   };
