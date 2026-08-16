@@ -11,7 +11,7 @@ services:
       - AGENT_RUNTIME=devin-cli
       - SANDBOX_PROVIDER=fake
       - DEVIN_CLI_PATH=/usr/local/bin/devin
-      - DEVIN_MODEL=sonnet
+      - DEVIN_MODEL=glm-5-2
       - BETTER_AUTH_SECRET=3b9f04db62f81dd223d3f23eee073321572d64d9f0876d77b29c3e4b03f1e8fe
       - BETTER_AUTH_URL=${BETTER_AUTH_URL}
       - API_URL=${API_URL}
@@ -50,7 +50,7 @@ services:
       - AGENT_RUNTIME=devin-cli
       - SANDBOX_PROVIDER=fake
       - DEVIN_CLI_PATH=/usr/local/bin/devin
-      - DEVIN_MODEL=sonnet
+      - DEVIN_MODEL=glm-5-2
       - BETTER_AUTH_SECRET=3b9f04db62f81dd223d3f23eee073321572d64d9f0876d77b29c3e4b03f1e8fe
       - ENCRYPTION_KEY=39fe16bb1f45837f8484e0039237c3e16bbbafe034b184cca9ae383cf7146f4e
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
