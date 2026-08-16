@@ -22,6 +22,7 @@ services:
       - NODE_ENV=production
     volumes:
       - rakazo-data:/data
+      - devin-creds:/root/.local/share/devin
     networks:
       - default
       - dokploy
@@ -47,6 +48,7 @@ services:
       - NODE_ENV=production
     volumes:
       - rakazo-data:/data
+      - devin-creds:/root/.local/share/devin
     depends_on:
       - api
 
@@ -76,3 +78,4 @@ networks:
 
 volumes:
   rakazo-data:
+  devin-creds:
