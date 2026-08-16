@@ -1,19 +1,21 @@
 import { expect, type Page, test } from "@playwright/test";
+import { captureScreenshot, completeOnboarding, signup } from "./helpers";
 
 test("Team Computer gives bots a home folder plus shared space while Private stays isolated", async ({
   page,
-}) => {
+}, testInfo) => {
   const stamp = Date.now();
   const personalMarker = `personal-${stamp}`;
   const sharedMarker = `shared-${stamp}`;
   const privateMarker = `private-${stamp}`;
 
-  await signup(page, `team-computer-${stamp}@rakazo.test`, "Team Computer");
-  await completeOnboarding(page);
+  await signup(page, `team-computer-${stamp}@rakazo.test`, "password12", "Team Computer");
+  await completeOnboarding(page, ["A bit of everything", "Clear and tight"]);
   const chiefId = activeBotId(page);
 
   await openComputerPanel(page);
   await expect(page.getByText("Team Computer", { exact: true }).last()).toBeVisible();
+  await captureScreenshot(page, testInfo, "41-team-computer");
 
   const writerId = await createBot(page, "Writer", "team");
   await sendAndWait(
@@ -29,6 +31,7 @@ test("Team Computer gives bots a home folder plus shared space while Private sta
   await expect(readFile(page, chiefId, `bots/${writerId}/notes/result.txt`)).resolves.toContain(
     personalMarker,
   );
+  await captureScreenshot(page, testInfo, "42-team-bot-home-folder");
 
   await sendAndWait(
     page,
@@ -40,6 +43,7 @@ test("Team Computer gives bots a home folder plus shared space while Private sta
   const privateId = await createBot(page, "Private Writer", "dedicated");
   await openComputerPanel(page);
   await expect(page.getByText("Private Writer’s computer", { exact: true }).last()).toBeVisible();
+  await captureScreenshot(page, testInfo, "43-private-computer");
   await expect(readFileResponse(page, privateId, "notes/result.txt")).resolves.toMatchObject({
     ok: false,
   });
@@ -60,18 +64,22 @@ test("Team Computer gives bots a home folder plus shared space while Private sta
   await expect(readFile(page, privateId, "shared/notes/result.txt")).resolves.toContain(
     sharedMarker,
   );
+  await captureScreenshot(page, testInfo, "44-private-bot-joined-team-computer");
 
   await setComputerMode(page, "Private Writer", privateId, "dedicated");
   await expect(readFile(page, privateId, "notes/result.txt")).resolves.toContain(privateMarker);
   await expect(readFile(page, writerId, "notes/result.txt")).resolves.toContain(personalMarker);
+  await captureScreenshot(page, testInfo, "45-private-computer-restored");
 });
 
-test("user control blocks another Team bot until the computer is released", async ({ page }) => {
+test("user control blocks another Team bot until the computer is released", async ({
+  page,
+}, testInfo) => {
   const stamp = Date.now();
   const marker = `after-release-${stamp}`;
 
-  await signup(page, `team-control-${stamp}@rakazo.test`, "Team Control");
-  await completeOnboarding(page);
+  await signup(page, `team-control-${stamp}@rakazo.test`, "password12", "Team Control");
+  await completeOnboarding(page, ["A bit of everything", "Clear and tight"]);
   const chiefId = activeBotId(page);
   const workerId = await createBot(page, "Worker", "team");
 
@@ -99,6 +107,7 @@ test("user control blocks another Team bot until the computer is released", asyn
   await expect(readFileResponse(page, workerId, "notes/result.txt")).resolves.toMatchObject({
     ok: false,
   });
+  await captureScreenshot(page, testInfo, "46-team-computer-user-control-blocks-bot");
 
   const release = page.getByRole("button", { name: "Release", exact: true });
   if (!(await release.isVisible().catch(() => false))) {
@@ -113,19 +122,26 @@ test("user control blocks another Team bot until the computer is released", asyn
   await expect(readFileResponse(page, chiefId, "notes/result.txt")).resolves.toMatchObject({
     ok: false,
   });
+  await captureScreenshot(page, testInfo, "47-team-computer-released-to-bot");
 });
 
-test("an active Team bot must be stopped before user takeover", async ({ page }) => {
+test("an active Team bot must be stopped before user takeover", async ({ page }, testInfo) => {
   const stamp = Date.now();
 
-  await signup(page, `active-team-control-${stamp}@rakazo.test`, "Active Team Control");
-  await completeOnboarding(page);
+  await signup(
+    page,
+    `active-team-control-${stamp}@rakazo.test`,
+    "password12",
+    "Active Team Control",
+  );
+  await completeOnboarding(page, ["A bit of everything", "Clear and tight"]);
   const chiefId = activeBotId(page);
 
   await sendMessage(page, "keep working until I stop you");
   await expect
     .poll(async () => (await threadSnapshot(page, chiefId)).run?.status ?? "idle")
     .toBe("running");
+  await captureScreenshot(page, testInfo, "48-active-team-bot-blocks-takeover");
   await expect
     .poll(
       async () => (await rpc<{ state: string }>(page, "computer/status", { botId: chiefId })).state,
@@ -144,47 +160,11 @@ test("an active Team bot must be stopped before user takeover", async ({ page })
   await expect
     .poll(async () => (await rpcResponse(page, "computer/takeover", { botId: chiefId })).ok)
     .toBe(true);
+  await page.getByTitle("Agent computer").click();
+  await expect(page.getByText("You have control", { exact: true })).toBeVisible();
+  await captureScreenshot(page, testInfo, "49-team-computer-takeover-after-stop");
   await rpc(page, "computer/release", { botId: chiefId });
 });
-
-async function signup(page: Page, email: string, name: string) {
-  await page.goto("/sign-up");
-  await page.getByPlaceholder("Your name").fill(name);
-  await page.getByPlaceholder("Your email address").fill(email);
-  await page.getByPlaceholder("Password").fill("password12");
-  await page.getByRole("button", { name: "Create account" }).click();
-}
-
-async function completeOnboarding(page: Page) {
-  await page.waitForURL(/\/(onboarding|app)/, { timeout: 20_000 });
-  const heading = page.getByRole("heading", { name: /Connect a model|Create your first bot/ });
-  const chief = page.getByText("Chief").first();
-  await heading.or(chief).waitFor({ timeout: 20_000 });
-  if ((await chief.isVisible().catch(() => false)) && page.url().includes("/app")) return;
-  if (
-    await page
-      .getByRole("heading", { name: "Connect a model" })
-      .isVisible()
-      .catch(() => false)
-  ) {
-    await page.getByRole("button", { name: "Skip for now" }).click();
-    await page.getByRole("heading", { name: "Create your first bot" }).waitFor();
-  }
-  if (
-    await page
-      .getByRole("heading", { name: "Create your first bot" })
-      .isVisible()
-      .catch(() => false)
-  ) {
-    await page.locator("label:has-text('Name') input").fill("Chief");
-    await page.getByRole("button", { name: "Continue" }).click();
-    await page.getByText("A bit of everything", { exact: true }).click();
-    await page.getByText("Clear and tight", { exact: true }).click();
-    await page.getByRole("button", { name: "Open Rakazo" }).click();
-  }
-  await page.waitForURL(/\/app/);
-  await expect(chief).toBeVisible();
-}
 
 async function createBot(page: Page, name: string, mode: "team" | "dedicated") {
   await page.getByTitle("New bot").click();

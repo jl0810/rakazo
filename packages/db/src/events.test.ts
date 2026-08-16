@@ -1,7 +1,12 @@
 import type { RealtimeFanout } from "@rakazo/adapter-kit";
 import { describe, expect, it, vi } from "vitest";
 import type { PrismaClient } from "./client.js";
-import { finalizeComputerControlRelease, followThreadEvents } from "./events.js";
+import {
+  answerRunInput,
+  finalizeComputerControlRelease,
+  followThreadEvents,
+  pauseRunForInput,
+} from "./events.js";
 
 class TestFanout implements RealtimeFanout {
   subscriber: ((payload: string) => void) | undefined;
@@ -163,5 +168,152 @@ describe("finalizeComputerControlRelease", () => {
     ).resolves.toBe(true);
 
     expect(tx.computer.updateMany).toHaveBeenCalledOnce();
+  });
+});
+
+describe("pauseRunForInput", () => {
+  it("stores the paused run, prompt, and status event in one transaction", async () => {
+    const fanout = new TestFanout();
+    const publish = vi.spyOn(fanout, "publish");
+    const tx = {
+      run: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      attempt: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      thread: {
+        update: vi
+          .fn()
+          .mockResolvedValueOnce({ nextMessageSeq: 4 })
+          .mockResolvedValueOnce({ nextEventSeq: 8 })
+          .mockResolvedValueOnce({ nextEventSeq: 9 }),
+      },
+      message: { create: vi.fn().mockResolvedValue({ id: "message-1" }) },
+      event: {
+        create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
+          ...event(data.seq),
+          type: data.type,
+        })),
+        deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+
+    await expect(
+      pauseRunForInput(
+        prisma,
+        {
+          workspaceId: "workspace-1",
+          threadId: "thread-1",
+          botId: "bot-1",
+          runId: "run-1",
+          attemptId: "attempt-1",
+          leaseOwner: "worker-1",
+          leaseFence: 3,
+          blocks: [{ kind: "ask", text: "Which city?" }],
+        },
+        fanout,
+      ),
+    ).resolves.toBe(true);
+
+    expect(tx.run.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: "running", leaseFence: 3 }),
+        data: { status: "waiting_input", leaseOwner: null, leaseExpiresAt: null },
+      }),
+    );
+    expect(tx.event.create.mock.calls.map(([input]) => input.data.type)).toEqual([
+      "thread.message.created",
+      "run.waiting_input",
+    ]);
+    expect(publish).toHaveBeenCalledWith("thread:thread-1", JSON.stringify({ cursor: 8 }));
+  });
+});
+
+describe("answerRunInput", () => {
+  it("answers only the selected pending prompt and publishes its update", async () => {
+    const fanout = new TestFanout();
+    const publish = vi.spyOn(fanout, "publish");
+    const tx = {
+      message: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "message-1",
+          blocks: [{ kind: "ask", text: "Which city?", status: "pending" }],
+        }),
+        update: vi.fn().mockResolvedValue({ id: "message-1" }),
+      },
+      run: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      task: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      thread: { update: vi.fn().mockResolvedValue({ nextEventSeq: 10 }) },
+      event: {
+        create: vi.fn(async ({ data }: { data: { seq: number; type: string } }) => ({
+          ...event(data.seq),
+          type: data.type,
+        })),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+
+    await expect(
+      answerRunInput(
+        prisma,
+        {
+          workspaceId: "workspace-1",
+          threadId: "thread-1",
+          botId: "bot-1",
+          runId: "run-1",
+          messageId: "message-1",
+          answer: "Paris",
+        },
+        fanout,
+      ),
+    ).resolves.toBe(true);
+
+    expect(tx.run.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: "waiting_input", botId: "bot-1" }),
+        data: { status: "queued" },
+      }),
+    );
+    expect(tx.message.update).toHaveBeenCalledWith({
+      where: { id: "message-1" },
+      data: {
+        blocks: [{ kind: "ask", text: "Which city?", status: "answered", answer: "Paris" }],
+      },
+    });
+    expect(tx.event.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ type: "thread.message.updated" }),
+      }),
+    );
+    expect(publish).toHaveBeenCalledWith("thread:thread-1", JSON.stringify({ cursor: 9 }));
+  });
+
+  it("rejects an already answered prompt without queuing the run", async () => {
+    const tx = {
+      message: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "message-1",
+          blocks: [{ kind: "ask", text: "Which city?", status: "answered", answer: "Paris" }],
+        }),
+      },
+      run: { updateMany: vi.fn() },
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (client: typeof tx) => unknown) => callback(tx)),
+    } as unknown as PrismaClient;
+
+    await expect(
+      answerRunInput(prisma, {
+        workspaceId: "workspace-1",
+        threadId: "thread-1",
+        botId: "bot-1",
+        runId: "run-1",
+        messageId: "message-1",
+        answer: "Rome",
+      }),
+    ).resolves.toBe(false);
+    expect(tx.run.updateMany).not.toHaveBeenCalled();
   });
 });

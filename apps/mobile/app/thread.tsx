@@ -102,7 +102,9 @@ export default function Thread() {
               if (
                 event.type === "thread.progress" ||
                 event.type === "thread.message.created" ||
-                event.type === "thread.subagent"
+                event.type === "thread.message.updated" ||
+                event.type === "thread.subagent" ||
+                event.type === "run.waiting_input"
               ) {
                 setSnap((prev) => applyMobileThreadEvent(prev, event));
               }

@@ -490,15 +490,21 @@ export function createRouter(deps: RouterDeps) {
         return { ok: true as const };
       }),
       answer: authed.threads.answer.handler(async ({ context, input }) => {
-        await repos.getBot(context.actor, input.botId);
-        await deps.prisma.run.update({
-          where: { id: input.runId, workspaceId: context.actor.workspaceId },
-          data: { status: "queued" },
+        const bot = await repos.getBot(context.actor, input.botId);
+        if (!bot.thread) throw new IsolationError();
+        const answered = await deps.events.answerRunInput({
+          workspaceId: context.actor.workspaceId,
+          threadId: bot.thread.id,
+          botId: bot.id,
+          runId: input.runId,
+          messageId: input.messageId,
+          answer: input.answer,
         });
-        await deps.prisma.task.updateMany({
-          where: { runs: { some: { id: input.runId } } },
-          data: { prompt: input.answer },
-        });
+        if (!answered) {
+          throw new ORPCError("CONFLICT", {
+            message: "This prompt is no longer awaiting an answer",
+          });
+        }
         await deps.jobs.enqueue(runContinueJob(input.runId));
         return { ok: true as const };
       }),

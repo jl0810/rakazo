@@ -70,7 +70,15 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ["threads/send", { botId: "missing-bot", text: "Nope" }],
       ["threads/stop", { botId: "missing-bot" }],
       ["threads/followUp", { botId: "missing-bot", text: "Nope" }],
-      ["threads/answer", { botId: "missing-bot", runId: "missing-run", answer: "Nope" }],
+      [
+        "threads/answer",
+        {
+          botId: "missing-bot",
+          runId: "missing-run",
+          messageId: "missing-message",
+          answer: "Nope",
+        },
+      ],
       ["threads/markRead", { botId: "missing-bot" }],
       ["threads/markUnread", { botId: "missing-bot" }],
       ["computer/status", { botId: "missing-bot" }],
@@ -206,7 +214,15 @@ describeWithDatabase("API authorization and resource isolation", () => {
       ["threads/send", { botId: ownerBot.id, text: "intruder message" }],
       ["threads/stop", { botId: ownerBot.id }],
       ["threads/followUp", { botId: ownerBot.id, text: "intruder follow-up" }],
-      ["threads/answer", { botId: ownerBot.id, runId: ownerRun.id, answer: "intruder answer" }],
+      [
+        "threads/answer",
+        {
+          botId: ownerBot.id,
+          runId: ownerRun.id,
+          messageId: "missing-message",
+          answer: "intruder answer",
+        },
+      ],
       ["threads/markRead", { botId: ownerBot.id }],
       ["threads/markUnread", { botId: ownerBot.id }],
       ["computer/status", { botId: ownerBot.id }],
@@ -232,6 +248,7 @@ describeWithDatabase("API authorization and resource isolation", () => {
     await expectDenied(app, intruder, "threads/answer", {
       botId: intruderBot.id,
       runId: ownerRun.id,
+      messageId: "missing-message",
       answer: "mixed-resource attack",
     });
 

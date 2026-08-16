@@ -41,6 +41,15 @@ export function reduceThreadSnapshot(
   event: ProductEvent,
 ): ThreadSnapshot | null {
   if (!prev) return prev;
+  if (event.type === "run.waiting_input") {
+    const run = prev.run;
+    if (!run || run.id !== event.runId || run.status === "waiting_input") return prev;
+    return {
+      ...prev,
+      cursor: event.seq,
+      run: { ...run, status: "waiting_input" },
+    };
+  }
   if (event.type === "thread.progress") {
     const progressId = progressMessageId(event);
     const previous = prev.messages.find((message) => message.id === progressId);
@@ -75,7 +84,7 @@ export function reduceThreadSnapshot(
     const progress = prev.messages.filter((message) => message.id.startsWith("progress:"));
     return { ...prev, cursor: event.seq, messages: [...without, next, ...progress] };
   }
-  if (event.type === "thread.message.created") {
+  if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
     const role = (event.payload.role as ThreadMessage["role"]) ?? "bot";
     const blocks = (event.payload.blocks as ThreadMessage["blocks"]) ?? [];
     const next: ThreadMessage = {

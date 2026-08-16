@@ -159,6 +159,7 @@ export type MobileMessage = {
     status?: string;
     progress?: string;
     result?: string;
+    answer?: string;
     botId?: string;
     title?: string;
     agentId?: string;
@@ -270,6 +271,10 @@ export function applyMobileThreadEvent(
   event: ThreadEvent,
 ): MobileSnapshot | null {
   if (!prev) return prev;
+  if (event.type === "run.waiting_input") {
+    if (!prev.run || prev.run.status === "waiting_input") return prev;
+    return { ...prev, run: { ...prev.run, status: "waiting_input" } };
+  }
   if (event.type === "thread.progress") {
     const progressId = progressMessageId(event);
     const previous = prev.messages.find((message) => message.id === progressId);
@@ -316,7 +321,7 @@ export function applyMobileThreadEvent(
       ],
     };
   }
-  if (event.type === "thread.message.created") {
+  if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
     const next: MobileMessage = {
       id: String(event.payload?.messageId ?? event.id ?? `msg:${event.seq ?? 0}`),
       role: (event.payload?.role as MobileMessage["role"]) ?? "bot",
