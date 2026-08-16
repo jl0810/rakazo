@@ -148,6 +148,36 @@ describe("thread event reduction", () => {
     expect(next?.messages.map((item) => item.id)).toEqual(["subagent:other", "durable"]);
     expect(next?.messages[1]?.blocks).toEqual([completedBlock]);
   });
+
+  it("applies the durable waiting-input run transition without a refresh", () => {
+    const initial: ThreadSnapshot = {
+      ...snapshot([]),
+      run: {
+        id: "run-1",
+        botId: "bot-1",
+        threadId: "thread-1",
+        taskId: "task-1",
+        status: "running",
+        trigger: "user",
+        modelProvider: null,
+        modelId: null,
+        error: null,
+        startedAt: null,
+        completedAt: null,
+      },
+    };
+
+    const waiting = reduceThreadSnapshot(
+      initial,
+      event({ type: "run.waiting_input", seq: 6, runId: "run-1" }),
+    );
+
+    expect(waiting?.run?.status).toBe("waiting_input");
+    expect(waiting?.cursor).toBe(6);
+    expect(
+      reduceThreadSnapshot(waiting, event({ type: "run.waiting_input", seq: 7, runId: "run-1" })),
+    ).toBe(waiting);
+  });
 });
 
 describe("computer event reduction", () => {

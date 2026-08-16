@@ -20,6 +20,7 @@ export interface ThreadEvents {
   append(input: AppendEventInput): Promise<ProductEvent>;
   finalizeComputerControlRelease(input: FinalizeComputerControlReleaseInput): Promise<boolean>;
   finalizeRun(input: FinalizeRunInput): Promise<boolean>;
+  pauseRunForInput(input: PauseRunForInput): Promise<boolean>;
   follow(threadId: string, cursor: number, signal?: AbortSignal): AsyncGenerator<ProductEvent>;
 }
 
@@ -45,6 +46,17 @@ interface FinalizeRunBase {
 export type FinalizeRunInput = FinalizeRunBase &
   ({ outcome: "completed"; blocks: MessageBlock[] } | { outcome: "failed"; error: string });
 
+export interface PauseRunForInput {
+  workspaceId: string;
+  threadId: string;
+  botId: string;
+  runId: string;
+  attemptId: string;
+  leaseOwner: string;
+  leaseFence: number;
+  blocks: MessageBlock[];
+}
+
 export function createThreadEvents(
   prisma: PrismaClient,
   realtime?: RealtimeFanout,
@@ -55,9 +67,72 @@ export function createThreadEvents(
     finalizeComputerControlRelease: (input) =>
       finalizeComputerControlRelease(prisma, input, realtime),
     finalizeRun: (input) => finalizeRun(prisma, input, realtime),
+    pauseRunForInput: (input) => pauseRunForInput(prisma, input, realtime),
     follow: (threadId, cursor, signal) =>
       followThreadEvents(prisma, threadId, cursor, realtime, signal, options.catchUpMs),
   };
+}
+
+export async function pauseRunForInput(
+  prisma: PrismaClient,
+  input: PauseRunForInput,
+  realtime?: RealtimeFanout,
+): Promise<boolean> {
+  const committed = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const paused = await tx.run.updateMany({
+      where: {
+        id: input.runId,
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        botId: input.botId,
+        status: "running",
+        leaseOwner: input.leaseOwner,
+        leaseFence: input.leaseFence,
+      },
+      data: { status: "waiting_input", leaseOwner: null, leaseExpiresAt: null },
+    });
+    if (paused.count !== 1) return null;
+
+    const attempt = await tx.attempt.updateMany({
+      where: {
+        id: input.attemptId,
+        runId: input.runId,
+        fence: input.leaseFence,
+        status: "running",
+      },
+      data: { status: "waiting_input", finishedAt: new Date() },
+    });
+    if (attempt.count !== 1) throw new Error("Active run attempt was not available to pause");
+
+    const message = await createThreadMessageInTransaction(tx, {
+      threadId: input.threadId,
+      role: "bot",
+      blocks: input.blocks,
+      runId: input.runId,
+    });
+    await appendEventInTransaction(tx, {
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      botId: input.botId,
+      type: "thread.message.created",
+      runId: input.runId,
+      payload: { messageId: message.id, role: "bot", blocks: input.blocks },
+    });
+    const waitingEvent = await appendEventInTransaction(tx, {
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      botId: input.botId,
+      type: "run.waiting_input",
+      runId: input.runId,
+      payload: {},
+    });
+    await tx.event.deleteMany({ where: { runId: input.runId, type: "thread.progress" } });
+    return { threadId: waitingEvent.threadId, seq: waitingEvent.seq };
+  });
+
+  if (!committed) return false;
+  await notifyRealtime(realtime, committed.threadId, committed.seq);
+  return true;
 }
 
 export async function finalizeComputerControlRelease(

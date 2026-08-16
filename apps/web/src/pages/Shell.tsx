@@ -574,11 +574,19 @@ export function ShellPage() {
             <MessageView
               key={message.id}
               message={message}
-              onOpenBot={(id) => navigate(`/app/${id}`)}
-              onAnswer={(text) =>
-                active &&
-                rpc.threads.answer({ botId: active.id, runId: message.runId ?? "", answer: text })
+              canAnswer={
+                snapshot?.run?.id === message.runId && snapshot?.run?.status === "waiting_input"
               }
+              onOpenBot={(id) => navigate(`/app/${id}`)}
+              onAnswer={async (text) => {
+                if (!active) return;
+                await rpc.threads.answer({
+                  botId: active.id,
+                  runId: message.runId ?? "",
+                  answer: text,
+                });
+                await refreshThread(active.id);
+              }}
             />
           ))}
           {snapshot?.run && ["running", "queued", "leased"].includes(snapshot.run.status) ? (
@@ -1004,7 +1012,8 @@ function applyThreadEvent(
   if (
     event.type === "thread.progress" ||
     event.type === "thread.subagent" ||
-    event.type === "thread.message.created"
+    event.type === "thread.message.created" ||
+    event.type === "run.waiting_input"
   ) {
     setSnapshot((prev) => reduceThreadSnapshot(prev, event));
   }
@@ -1014,12 +1023,14 @@ function applyThreadEvent(
 }
 
 function MessageView({
+  canAnswer,
   message,
   onAnswer,
   onOpenBot,
 }: {
+  canAnswer: boolean;
   message: ThreadMessage;
-  onAnswer: (text: string) => void;
+  onAnswer: (text: string) => Promise<void>;
   onOpenBot: (botId: string) => void;
 }) {
   return (
@@ -1146,36 +1157,7 @@ function MessageView({
           );
         }
         if (block.kind === "ask") {
-          return (
-            <div
-              key={i}
-              className="max-w-[74%] rounded-[20px] border border-[#242428] bg-[#141417] px-5 py-[17px]"
-            >
-              <div className="text-[15.5px] leading-[1.5] text-[#ECECEE]">
-                <ChatMarkdown>{block.text}</ChatMarkdown>
-              </div>
-              {block.detail ? (
-                <pre className="mt-3 rounded-xl bg-[#0E0E10] px-3.5 py-3 font-mono text-[12.5px] leading-[1.7] text-[#85858A]">
-                  {block.detail}
-                </pre>
-              ) : null}
-              <div className="mt-3.5 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => onAnswer("approved")}
-                  className="rounded-[11px] bg-[#F1F1EF] px-[17px] py-2 text-[14.5px] font-medium text-[#17171A]"
-                >
-                  Send it
-                </button>
-                <button
-                  type="button"
-                  className="rounded-[11px] border border-[#26262A] px-[17px] py-2 text-[14.5px] text-[#C9C9CE]"
-                >
-                  Edit first
-                </button>
-              </div>
-            </div>
-          );
+          return <AskCard key={i} block={block} canAnswer={canAnswer} onAnswer={onAnswer} />;
         }
         if (block.kind === "computer") {
           return (
@@ -1198,6 +1180,104 @@ function MessageView({
         return null;
       })}
     </>
+  );
+}
+
+type AskBlock = Extract<ThreadMessage["blocks"][number], { kind: "ask" }>;
+
+function AskCard({
+  block,
+  canAnswer,
+  onAnswer,
+}: {
+  block: AskBlock;
+  canAnswer: boolean;
+  onAnswer: (text: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [answer, setAnswer] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submitAnswer(value: string) {
+    const text = value.trim();
+    if (!text || submitting) return;
+    setSubmitting(true);
+    try {
+      await onAnswer(text);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="max-w-[74%] rounded-[20px] border border-[#242428] bg-[#141417] px-5 py-[17px]">
+      <div className="text-[15.5px] leading-[1.5] text-[#ECECEE]">
+        <ChatMarkdown>{block.text}</ChatMarkdown>
+      </div>
+      {block.detail ? (
+        <pre className="mt-3 rounded-xl bg-[#0E0E10] px-3.5 py-3 font-mono text-[12.5px] leading-[1.7] text-[#85858A]">
+          {block.detail}
+        </pre>
+      ) : null}
+      {!canAnswer ? (
+        <div className="mt-3.5 text-[13.5px] font-medium text-[#4ECB71]">Answered</div>
+      ) : editing ? (
+        <form
+          className="mt-3.5 flex flex-col gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitAnswer(answer);
+          }}
+        >
+          <input
+            aria-label="Answer"
+            value={answer}
+            onChange={(event) => setAnswer(event.target.value)}
+            placeholder="Type your answer"
+            className="rounded-[11px] border border-[#303035] bg-[#0E0E10] px-3.5 py-2.5 text-[14.5px] text-[#ECECEE] outline-none focus:border-[#66666D]"
+          />
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={!answer.trim() || submitting}
+              className="rounded-[11px] bg-[#F1F1EF] px-[17px] py-2 text-[14.5px] font-medium text-[#17171A] disabled:opacity-50"
+            >
+              {submitting ? "Sending…" : "Send answer"}
+            </button>
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => {
+                setAnswer("");
+                setEditing(false);
+              }}
+              className="rounded-[11px] border border-[#26262A] px-[17px] py-2 text-[14.5px] text-[#C9C9CE] disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="mt-3.5 flex gap-2">
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={() => void submitAnswer("approved")}
+            className="rounded-[11px] bg-[#F1F1EF] px-[17px] py-2 text-[14.5px] font-medium text-[#17171A] disabled:opacity-50"
+          >
+            {submitting ? "Sending…" : "Send it"}
+          </button>
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={() => setEditing(true)}
+            className="rounded-[11px] border border-[#26262A] px-[17px] py-2 text-[14.5px] text-[#C9C9CE] disabled:opacity-50"
+          >
+            Edit first
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -241,6 +241,19 @@ describe("mobile thread event reduction", () => {
     expect(next?.messages[1]?.blocks).toEqual([completed]);
   });
 
+  it("applies the durable waiting-input run transition", () => {
+    const initial: MobileSnapshot = { ...snapshot(), run: { status: "running" } };
+    const waiting = applyMobileThreadEvent(initial, {
+      type: "run.waiting_input",
+      runId: "run-1",
+    });
+
+    expect(waiting?.run?.status).toBe("waiting_input");
+    expect(applyMobileThreadEvent(waiting, { type: "run.waiting_input", runId: "run-1" })).toBe(
+      waiting,
+    );
+  });
+
   it("leaves the snapshot unchanged for unrelated events", () => {
     const initial = snapshot();
     expect(applyMobileThreadEvent(initial, { type: "run.started" })).toBe(initial);

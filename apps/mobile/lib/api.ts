@@ -262,6 +262,10 @@ export function applyMobileThreadEvent(
   event: ThreadEvent,
 ): MobileSnapshot | null {
   if (!prev) return prev;
+  if (event.type === "run.waiting_input") {
+    if (!prev.run || prev.run.status === "waiting_input") return prev;
+    return { ...prev, run: { ...prev.run, status: "waiting_input" } };
+  }
   if (event.type === "thread.progress") {
     const progressId = progressMessageId(event);
     const previous = prev.messages.find((message) => message.id === progressId);

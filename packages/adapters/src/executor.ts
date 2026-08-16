@@ -658,20 +658,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
               const safeDetail = event.detail
                 ? redactSecrets(event.detail, runSecrets)
                 : event.detail;
-              await publishMessage(deps, run, "bot", [
-                { kind: "ask", text: safeText, detail: safeDetail },
-              ]);
               await checkpointAndRecordComputerWorkspace(deps, bot.id, computer, context);
-              const paused = await deps.prisma.run.updateMany({
-                where: { id: runId, status: "running", leaseOwner: workerId, leaseFence: fence },
-                data: { status: "waiting_input", leaseOwner: null, leaseExpiresAt: null },
+              const paused = await deps.events.pauseRunForInput({
+                workspaceId: run.workspaceId,
+                threadId: run.threadId,
+                botId: run.botId,
+                runId,
+                attemptId: attempt.id,
+                leaseOwner: workerId,
+                leaseFence: fence,
+                blocks: [{ kind: "ask", text: safeText, detail: safeDetail }],
               });
-              if (paused.count !== 1) return;
-              await deps.prisma.attempt.update({
-                where: { id: attempt.id },
-                data: { status: "waiting_input", finishedAt: new Date() },
-              });
-              await clearRunProgress(deps, runId);
+              if (!paused) return;
               await notifyRun(deps, run, {
                 kind: "help",
                 title: `${bot.name} needs an answer`,

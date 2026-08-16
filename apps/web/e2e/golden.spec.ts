@@ -1,4 +1,5 @@
-import { expect, type Page, type TestInfo, test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
+import { captureScreenshot, completeOnboarding, signup } from "./helpers";
 
 test.describe.configure({ mode: "serial" });
 
@@ -166,68 +167,3 @@ test("bot context menu pins, duplicates, edits, and confirms deletion", async ({
   await expect(page.locator("label:has-text('Name') input")).toHaveValue("Chief");
   await captureScreenshot(page, testInfo, "19-edit-profile");
 });
-
-async function completeOnboarding(page: Page, answers: string[], testInfo?: TestInfo) {
-  await page.waitForURL(/\/(onboarding|app)/, { timeout: 20_000 });
-  const heading = page.getByRole("heading", { name: /Connect a model|Create your first bot/ });
-  const chief = page.getByText("Chief").first();
-  await heading.or(chief).waitFor({ timeout: 20_000 });
-  if ((await chief.isVisible().catch(() => false)) && page.url().includes("/app")) return;
-  if (
-    await page
-      .getByRole("heading", { name: "Connect a model" })
-      .isVisible()
-      .catch(() => false)
-  ) {
-    if (testInfo) await captureScreenshot(page, testInfo, "02-connect-model");
-    await page.getByRole("button", { name: "Skip for now" }).click();
-  }
-  if (
-    await page
-      .getByRole("heading", { name: "Create your first bot" })
-      .isVisible()
-      .catch(() => false)
-  ) {
-    if (testInfo) await captureScreenshot(page, testInfo, "03-create-first-bot");
-    await page.locator("label:has-text('Name') input").fill("Chief");
-    await page.getByRole("button", { name: "Continue" }).click();
-    for (const [index, answer] of answers.entries()) {
-      const option = page.getByText(answer, { exact: true });
-      await expect(option).toBeVisible();
-      if (testInfo) {
-        await captureScreenshot(page, testInfo, `0${index + 4}-onboarding-question-${index + 1}`);
-      }
-      await option.click();
-    }
-    await page.getByRole("button", { name: "Open Rakazo" }).click();
-  }
-  await page.waitForURL(/\/app/);
-  await expect(page.getByText("Chief").first()).toBeVisible();
-  if (testInfo) await captureScreenshot(page, testInfo, "06-onboarding-complete");
-}
-
-async function signup(
-  page: Page,
-  email: string,
-  password: string,
-  name: string,
-  testInfo?: TestInfo,
-) {
-  await page.goto("/sign-up");
-  if (testInfo) await captureScreenshot(page, testInfo, "01-sign-up");
-  await page.getByPlaceholder("Your name").fill(name);
-  await page.getByPlaceholder("Your email address").fill(email);
-  await page.getByPlaceholder("Password").fill(password);
-  await page.getByRole("button", { name: "Create account" }).click();
-}
-
-async function captureScreenshot(page: Page, testInfo: TestInfo, name: string) {
-  const screenshotPath = testInfo.outputPath(`${name}.png`);
-  await page.screenshot({
-    animations: "disabled",
-    caret: "hide",
-    fullPage: true,
-    path: screenshotPath,
-  });
-  await testInfo.attach(name, { contentType: "image/png", path: screenshotPath });
-}
