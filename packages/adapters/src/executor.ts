@@ -667,7 +667,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 attemptId: attempt.id,
                 leaseOwner: workerId,
                 leaseFence: fence,
-                blocks: [{ kind: "ask", text: safeText, detail: safeDetail }],
+                blocks: [{ kind: "ask", text: safeText, detail: safeDetail, status: "pending" }],
               });
               if (!paused) return;
               await notifyRun(deps, run, {

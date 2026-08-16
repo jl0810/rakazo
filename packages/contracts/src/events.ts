@@ -3,6 +3,7 @@ import { Id } from "./ids.js";
 
 export const ProductEventType = z.enum([
   "thread.message.created",
+  "thread.message.updated",
   "thread.progress",
   "thread.artifact",
   "thread.ask",
@@ -45,6 +46,8 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     kind: z.literal("ask"),
     text: z.string(),
     detail: z.string().optional(),
+    status: z.enum(["pending", "answered"]).optional(),
+    answer: z.string().optional(),
     actions: z.array(z.object({ id: z.string(), label: z.string() })).optional(),
   }),
   z.object({

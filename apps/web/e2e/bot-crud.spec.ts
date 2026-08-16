@@ -16,14 +16,14 @@ test("bot creation, editing, and deletion persist", async ({ page }, testInfo) =
   await page
     .locator("label:has-text('Description') textarea")
     .fill("Finds reliable sources and turns them into concise briefs.");
-  await captureScreenshot(page, testInfo, "23-new-bot-form");
+  await captureScreenshot(page, testInfo, "26-new-bot-form");
   await page.getByRole("button", { name: "Create", exact: true }).click();
 
   await expect(botList.getByRole("button", { name: /^Researcher/ })).toBeVisible();
   await expect(page.getByPlaceholder("Message Researcher")).toBeVisible();
   await page.waitForURL(/\/app\/[^/]+$/);
   const deletedBotPath = new URL(page.url()).pathname;
-  await captureScreenshot(page, testInfo, "24-created-bot");
+  await captureScreenshot(page, testInfo, "27-created-bot");
 
   await page.locator("main").getByRole("button", { name: "Researcher", exact: true }).click();
   const nameInput = page.locator("label:has-text('Name') input");
@@ -41,7 +41,7 @@ test("bot creation, editing, and deletion persist", async ({ page }, testInfo) =
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(botList.getByRole("button", { name: /^Atlas/ })).toBeVisible();
   await expect(page.getByPlaceholder("Message Atlas")).toBeVisible();
-  await captureScreenshot(page, testInfo, "25-edited-bot-profile");
+  await captureScreenshot(page, testInfo, "28-edited-bot-profile");
 
   await page.reload();
   await expect(botList.getByRole("button", { name: /^Atlas/ })).toBeVisible();
@@ -50,13 +50,13 @@ test("bot creation, editing, and deletion persist", async ({ page }, testInfo) =
   await expect(nameInput).toHaveValue("Atlas");
   await expect(titleInput).toHaveValue("Research lead");
   await expect(descriptionInput).toHaveValue("Builds durable, source-backed research briefs.");
-  await captureScreenshot(page, testInfo, "26-reloaded-bot-profile");
+  await captureScreenshot(page, testInfo, "29-reloaded-bot-profile");
 
   const atlas = botList.getByRole("button", { name: /^Atlas/ });
   await atlas.click({ button: "right" });
   await page.getByRole("menuitem", { name: "Delete" }).click();
   await expect(page.getByRole("alertdialog", { name: "Delete Atlas?" })).toBeVisible();
-  await captureScreenshot(page, testInfo, "27-delete-bot-confirmation");
+  await captureScreenshot(page, testInfo, "30-delete-bot-confirmation");
   await page.getByRole("button", { name: "Delete", exact: true }).click();
 
   await expect(botList.getByText("Atlas", { exact: true })).toHaveCount(0);
@@ -68,5 +68,5 @@ test("bot creation, editing, and deletion persist", async ({ page }, testInfo) =
   await expect(botList.getByText("Atlas", { exact: true })).toHaveCount(0);
   await expect(botList.getByRole("button", { name: /^Chief/ })).toBeVisible();
   await expect(page.getByPlaceholder("Message Chief")).toBeVisible();
-  await captureScreenshot(page, testInfo, "28-deleted-bot-fallback");
+  await captureScreenshot(page, testInfo, "31-deleted-bot-fallback");
 });

@@ -157,6 +157,7 @@ export type MobileMessage = {
     status?: string;
     progress?: string;
     result?: string;
+    answer?: string;
     botId?: string;
     title?: string;
     agentId?: string;
@@ -312,7 +313,7 @@ export function applyMobileThreadEvent(
       ],
     };
   }
-  if (event.type === "thread.message.created") {
+  if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
     const next: MobileMessage = {
       id: String(event.payload?.messageId ?? event.id ?? `msg:${event.seq ?? 0}`),
       role: (event.payload?.role as MobileMessage["role"]) ?? "bot",

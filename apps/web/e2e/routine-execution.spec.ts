@@ -15,17 +15,17 @@ test("routine run-now completes and survives reload", async ({ page }, testInfo)
   await page.getByLabel("How often").selectOption("Weekdays");
   await expect(page.getByText("Weekdays", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("at 9:00 AM", { exact: true })).toBeVisible();
-  await captureScreenshot(page, testInfo, "29-routine-configured");
+  await captureScreenshot(page, testInfo, "32-routine-configured");
 
   await page.getByRole("button", { name: "Save" }).click();
   const routine = page.getByRole("button", { name: /Daily verification/ });
   await expect(routine).toContainText("Weekdays at 9:00 AM");
-  await captureScreenshot(page, testInfo, "30-routine-scheduled");
+  await captureScreenshot(page, testInfo, "33-routine-scheduled");
 
   await page.getByRole("button", { name: "Run now" }).click();
   await expect(page.getByText(/routine-run-now-ok/i).first()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("button", { name: "Send" })).toBeVisible({ timeout: 30_000 });
-  await captureScreenshot(page, testInfo, "31-routine-run-completed");
+  await captureScreenshot(page, testInfo, "34-routine-run-completed");
 
   await page.reload();
   await expect(page.getByText(/routine-run-now-ok/i).first()).toBeVisible();
@@ -33,5 +33,5 @@ test("routine run-now completes and survives reload", async ({ page }, testInfo)
   await expect(page.getByRole("button", { name: /Daily verification/ })).toContainText(
     "Weekdays at 9:00 AM",
   );
-  await captureScreenshot(page, testInfo, "32-routine-run-persisted");
+  await captureScreenshot(page, testInfo, "35-routine-run-persisted");
 });

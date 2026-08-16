@@ -1,5 +1,9 @@
 import type { RealtimeFanout } from "@rakazo/adapter-kit";
-import type { MessageBlock, ProductEvent } from "@rakazo/contracts";
+import {
+  type MessageBlock,
+  MessageBlock as MessageBlockSchema,
+  type ProductEvent,
+} from "@rakazo/contracts";
 import type { Prisma, PrismaClient } from "./client.js";
 import { createThreadMessageInTransaction } from "./messages.js";
 
@@ -17,6 +21,7 @@ export interface AppendEventInput {
 }
 
 export interface ThreadEvents {
+  answerRunInput(input: AnswerRunInput): Promise<boolean>;
   append(input: AppendEventInput): Promise<ProductEvent>;
   finalizeComputerControlRelease(input: FinalizeComputerControlReleaseInput): Promise<boolean>;
   finalizeRun(input: FinalizeRunInput): Promise<boolean>;
@@ -57,12 +62,22 @@ export interface PauseRunForInput {
   blocks: MessageBlock[];
 }
 
+export interface AnswerRunInput {
+  workspaceId: string;
+  threadId: string;
+  botId: string;
+  runId: string;
+  messageId: string;
+  answer: string;
+}
+
 export function createThreadEvents(
   prisma: PrismaClient,
   realtime?: RealtimeFanout,
   options: { catchUpMs?: number } = {},
 ): ThreadEvents {
   return {
+    answerRunInput: (input) => answerRunInput(prisma, input, realtime),
     append: (input) => appendEvent(prisma, input, realtime),
     finalizeComputerControlRelease: (input) =>
       finalizeComputerControlRelease(prisma, input, realtime),
@@ -71,6 +86,67 @@ export function createThreadEvents(
     follow: (threadId, cursor, signal) =>
       followThreadEvents(prisma, threadId, cursor, realtime, signal, options.catchUpMs),
   };
+}
+
+export async function answerRunInput(
+  prisma: PrismaClient,
+  input: AnswerRunInput,
+  realtime?: RealtimeFanout,
+): Promise<boolean> {
+  const committed = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const message = await tx.message.findFirst({
+      where: {
+        id: input.messageId,
+        threadId: input.threadId,
+        runId: input.runId,
+        role: "bot",
+      },
+    });
+    const parsed = MessageBlockSchema.array().safeParse(message?.blocks);
+    if (!message || !parsed.success) return null;
+    const pendingAsk = parsed.data.find(
+      (block) => block.kind === "ask" && block.status !== "answered",
+    );
+    if (!pendingAsk) return null;
+
+    const queued = await tx.run.updateMany({
+      where: {
+        id: input.runId,
+        workspaceId: input.workspaceId,
+        threadId: input.threadId,
+        botId: input.botId,
+        status: "waiting_input",
+      },
+      data: { status: "queued" },
+    });
+    if (queued.count !== 1) return null;
+
+    const task = await tx.task.updateMany({
+      where: { runs: { some: { id: input.runId } } },
+      data: { prompt: input.answer },
+    });
+    if (task.count !== 1) throw new Error("Run task was not available to answer");
+
+    const blocks = parsed.data.map((block) =>
+      block === pendingAsk
+        ? { ...block, status: "answered" as const, answer: input.answer }
+        : block,
+    );
+    await tx.message.update({ where: { id: message.id }, data: { blocks } });
+    const updated = await appendEventInTransaction(tx, {
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      botId: input.botId,
+      type: "thread.message.updated",
+      runId: input.runId,
+      payload: { messageId: message.id, role: "bot", blocks },
+    });
+    return { threadId: updated.threadId, seq: updated.seq };
+  });
+
+  if (!committed) return false;
+  await notifyRealtime(realtime, committed.threadId, committed.seq);
+  return true;
 }
 
 export async function pauseRunForInput(

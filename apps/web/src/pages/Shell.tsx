@@ -12,6 +12,7 @@ import {
   cronFromPreset,
   defaultCronPreset,
   formatCron,
+  isActive,
   presetFromCron,
 } from "@rakazo/core";
 import { BotAvatar, Button } from "@rakazo/ui-web";
@@ -280,6 +281,7 @@ export function ShellPage() {
     () => bots.filter((b) => `${b.name} ${b.preview}`.toLowerCase().includes(query.toLowerCase())),
     [bots, query],
   );
+  const answerableAskMessageId = latestAnswerableAskMessageId(snapshot);
 
   async function send() {
     if (!active || !draft.trim()) return;
@@ -574,15 +576,14 @@ export function ShellPage() {
             <MessageView
               key={message.id}
               message={message}
-              canAnswer={
-                snapshot?.run?.id === message.runId && snapshot?.run?.status === "waiting_input"
-              }
+              canAnswer={message.id === answerableAskMessageId}
               onOpenBot={(id) => navigate(`/app/${id}`)}
               onAnswer={async (text) => {
                 if (!active) return;
                 await rpc.threads.answer({
                   botId: active.id,
                   runId: message.runId ?? "",
+                  messageId: message.id,
                   answer: text,
                 });
                 await refreshThread(active.id);
@@ -617,7 +618,7 @@ export function ShellPage() {
               placeholder={active ? `Message ${active.name}` : "Message…"}
               className="flex-1 bg-transparent text-[15.5px] text-[#E9E9EA] outline-none"
             />
-            {snapshot?.run && ["running", "queued", "leased"].includes(snapshot.run.status) ? (
+            {snapshot?.run && isActive(snapshot.run.status) ? (
               <button
                 type="button"
                 aria-label="Stop"
@@ -1013,6 +1014,7 @@ function applyThreadEvent(
     event.type === "thread.progress" ||
     event.type === "thread.subagent" ||
     event.type === "thread.message.created" ||
+    event.type === "thread.message.updated" ||
     event.type === "run.waiting_input"
   ) {
     setSnapshot((prev) => reduceThreadSnapshot(prev, event));
@@ -1020,6 +1022,18 @@ function applyThreadEvent(
   if (isComputerStatusEvent(event)) {
     setComputer((prev) => reduceComputerStatus(prev, event));
   }
+}
+
+function latestAnswerableAskMessageId(snapshot: ThreadSnapshot | null): string | null {
+  if (snapshot?.run?.status !== "waiting_input") return null;
+  for (let index = snapshot.messages.length - 1; index >= 0; index -= 1) {
+    const message = snapshot.messages[index];
+    if (message?.runId !== snapshot.run.id) continue;
+    if (message.blocks.some((block) => block.kind === "ask" && block.status !== "answered")) {
+      return message.id;
+    }
+  }
+  return null;
 }
 
 function MessageView({
@@ -1219,8 +1233,12 @@ function AskCard({
           {block.detail}
         </pre>
       ) : null}
-      {!canAnswer ? (
-        <div className="mt-3.5 text-[13.5px] font-medium text-[#4ECB71]">Answered</div>
+      {block.status === "answered" ? (
+        <div className="mt-3.5 text-[13.5px] font-medium text-[#4ECB71]">
+          {block.answer ? `Answered: ${block.answer}` : "Answered"}
+        </div>
+      ) : !canAnswer ? (
+        <div className="mt-3.5 text-[13.5px] font-medium text-[#85858A]">No longer active</div>
       ) : editing ? (
         <form
           className="mt-3.5 flex flex-col gap-2"

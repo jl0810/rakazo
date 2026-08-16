@@ -178,6 +178,34 @@ describe("thread event reduction", () => {
       reduceThreadSnapshot(waiting, event({ type: "run.waiting_input", seq: 7, runId: "run-1" })),
     ).toBe(waiting);
   });
+
+  it("replaces an ask message when its durable prompt state changes", () => {
+    const initial = snapshot([
+      message("ask-1", [{ kind: "ask", text: "Which city?", status: "pending" }]),
+    ]);
+    const next = reduceThreadSnapshot(
+      initial,
+      event({
+        type: "thread.message.updated",
+        seq: 7,
+        payload: {
+          messageId: "ask-1",
+          role: "bot",
+          blocks: [
+            {
+              kind: "ask",
+              text: "Which city?",
+              status: "answered",
+              answer: "Paris",
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(next?.messages).toHaveLength(1);
+    expect(next?.messages[0]?.blocks[0]).toMatchObject({ status: "answered", answer: "Paris" });
+  });
 });
 
 describe("computer event reduction", () => {

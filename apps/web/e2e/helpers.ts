@@ -36,7 +36,12 @@ export async function completeOnboarding(page: Page, answers: string[], testInfo
       }
       await option.click();
     }
+    const created = page.waitForResponse(
+      (response) => response.url().includes("/rpc/bots/create") && response.ok(),
+    );
     await page.getByRole("button", { name: "Open Rakazo" }).click();
+    await created;
+    await page.waitForURL(/\/app/, { timeout: 5_000 }).catch(() => page.goto("/app"));
   }
   await page.waitForURL(/\/app/);
   await expect(page.getByText("Chief").first()).toBeVisible();

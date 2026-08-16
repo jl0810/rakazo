@@ -18,21 +18,21 @@ test("logout protects bot deep links and sign-in restores the session", async ({
 
   await page.getByRole("button", { name: new RegExp(userName, "i") }).click();
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
-  await captureScreenshot(page, testInfo, "33-account-menu");
+  await captureScreenshot(page, testInfo, "36-account-menu");
 
   await page.getByRole("button", { name: "Log out" }).click();
   await expect(page.getByRole("heading", { name: "Sign in to Rakazo" })).toBeVisible();
   await page.goto("/");
   await expect(page.getByText(/Your team of always-on agents/)).toBeVisible();
   await expect(page.getByRole("button", { name: /Sign in/ })).toBeVisible();
-  await captureScreenshot(page, testInfo, "34-logged-out-welcome");
+  await captureScreenshot(page, testInfo, "37-logged-out-welcome");
 
   await page.goto(protectedBotPath);
   await page.waitForURL((url) => url.pathname === "/sign-in");
   await expect(page.getByRole("heading", { name: "Sign in to Rakazo" })).toBeVisible();
   await expect(page.getByText("Chief", { exact: true })).toHaveCount(0);
   await expect(page.getByText(userName, { exact: true })).toHaveCount(0);
-  await captureScreenshot(page, testInfo, "35-protected-deep-link-sign-in");
+  await captureScreenshot(page, testInfo, "38-protected-deep-link-sign-in");
 
   await page.getByPlaceholder("Your email address").fill(email);
   await page.getByPlaceholder("Password").fill("wrong-password12");
@@ -43,7 +43,7 @@ test("logout protects bot deep links and sign-in restores the session", async ({
       .getByText(/invalid email or password|invalid credentials|incorrect password/i),
   ).toBeVisible();
   await expect(page).toHaveURL(/\/sign-in$/);
-  await captureScreenshot(page, testInfo, "36-invalid-credentials");
+  await captureScreenshot(page, testInfo, "39-invalid-credentials");
 
   await page.getByPlaceholder("Password").fill(password);
   await page.getByRole("button", { name: "Continue with email" }).click();
@@ -52,5 +52,5 @@ test("logout protects bot deep links and sign-in restores the session", async ({
   });
   await expect(page.getByPlaceholder("Message Chief")).toBeVisible();
   await expect(page.getByRole("button", { name: new RegExp(userName, "i") })).toBeVisible();
-  await captureScreenshot(page, testInfo, "37-restored-auth-session");
+  await captureScreenshot(page, testInfo, "40-restored-auth-session");
 });

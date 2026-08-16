@@ -126,7 +126,7 @@ export const appContract = {
       .input(z.object({ botId: Id, text: z.string().min(1) }))
       .output(z.object({ ok: z.literal(true) })),
     answer: oc
-      .input(z.object({ botId: Id, runId: Id, answer: z.string().min(1) }))
+      .input(z.object({ botId: Id, runId: Id, messageId: Id, answer: z.string().min(1) }))
       .output(z.object({ ok: z.literal(true) })),
     markRead: oc.input(botId).output(z.object({ ok: z.literal(true) })),
     markUnread: oc.input(botId).output(z.object({ ok: z.literal(true) })),

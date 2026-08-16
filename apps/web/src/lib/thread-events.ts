@@ -84,7 +84,7 @@ export function reduceThreadSnapshot(
     const progress = prev.messages.filter((message) => message.id.startsWith("progress:"));
     return { ...prev, cursor: event.seq, messages: [...without, next, ...progress] };
   }
-  if (event.type === "thread.message.created") {
+  if (event.type === "thread.message.created" || event.type === "thread.message.updated") {
     const role = (event.payload.role as ThreadMessage["role"]) ?? "bot";
     const blocks = (event.payload.blocks as ThreadMessage["blocks"]) ?? [];
     const next: ThreadMessage = {

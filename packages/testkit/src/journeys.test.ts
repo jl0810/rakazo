@@ -683,9 +683,14 @@ describeJourneys("required product journeys", () => {
       (snap) => snap.run?.status === "waiting_input",
     );
     expect(JSON.stringify(waiting.messages)).toMatch(/which city/i);
+    const askMessage = waiting.messages.find((message) =>
+      message.blocks.some((block) => block.kind === "ask"),
+    );
+    expect(askMessage).toBeTruthy();
     await rpc(app, cookie, "threads/answer", {
       botId: bot.id,
       runId: asked.runId,
+      messageId: askMessage!.id,
       answer: "Paris",
     });
     const answered = await waitFor(
