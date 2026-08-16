@@ -22,7 +22,6 @@ services:
       - NODE_ENV=production
     volumes:
       - rakazo-data:/data
-      - devin-config:/root/.config/devin
     ports:
       - "3100:3100"
 
@@ -45,7 +44,6 @@ services:
       - NODE_ENV=production
     volumes:
       - rakazo-data:/data
-      - devin-config:/root/.config/devin
     depends_on:
       - api
 
@@ -65,4 +63,3 @@ services:
 
 volumes:
   rakazo-data:
-  devin-config:

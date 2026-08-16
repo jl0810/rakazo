@@ -1,15 +1,33 @@
 FROM node:22-bookworm
 
-# Install system deps for Devin CLI sandbox (bubblewrap + socat)
+# Install system deps:
+# - bwrap + socat: Devin CLI sandbox
+# - curl + git: Devin CLI install + cloning MCP repos
+# - python3 + pip: postgres-mcp via uvx
+# - ca-certificates: TLS for API calls
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bwrap socat curl ca-certificates git \
+    python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
+
+# Install uv (provides uvx for postgres-mcp)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
 
 # Install Devin CLI (Linux binary)
 RUN curl -fsSL https://cli.devin.ai/install.sh | bash
 
 # Enable pnpm
 RUN corepack enable
+
+# Clone and build dokploy-mcp from sysadmin repo
+RUN git clone --depth 1 https://github.com/jl0810/sysadmin.git /opt/sysadmin \
+    && cd /opt/sysadmin && npm install && npm run build \
+    && chmod 755 build/index.js
+
+# Write Devin MCP config with Linux paths
+RUN mkdir -p /root/.config/devin
+COPY infra/dokploy/mcp_config.json /root/.config/devin/mcp_config.json
 
 WORKDIR /app
 

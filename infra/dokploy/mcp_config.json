@@ -1,0 +1,102 @@
+{
+  "mcpServers": {
+    "dokploy": {
+      "command": "/usr/local/bin/node",
+      "args": ["/opt/sysadmin/build/index.js"],
+      "env": {
+        "DOKPLOY_API_KEY": "CSeAXrkJutMwAhrDVWINvmtSmUAoVkgBpjwmWHUUPQbAVuEuHOHQqkJOwWngRKue",
+        "DOKPLOY_URL": "http://100.81.25.91:3000/api"
+      },
+      "disabledTools": [
+        "project-create",
+        "project-update",
+        "project-duplicate",
+        "project-remove",
+        "application-create",
+        "application-delete",
+        "application-move",
+        "application-cancelDeployment",
+        "application-reload",
+        "application-markRunning",
+        "application-saveBuildType",
+        "application-saveGithubProvider",
+        "application-saveGitlabProvider",
+        "application-saveBitbucketProvider",
+        "application-saveGiteaProvider",
+        "application-saveGitProvider",
+        "application-saveDockerProvider",
+        "application-disconnectGitProvider",
+        "application-updateTraefikConfig",
+        "application-refreshToken",
+        "application-cleanQueues",
+        "domain-byComposeId",
+        "domain-one",
+        "domain-create",
+        "domain-update",
+        "domain-delete",
+        "domain-validateDomain",
+        "domain-generateDomain",
+        "domain-canGenerateTraefikMeDomains",
+        "postgres-create",
+        "postgres-update",
+        "postgres-remove",
+        "postgres-move",
+        "postgres-reload",
+        "postgres-rebuild",
+        "postgres-changeStatus",
+        "mysql-create",
+        "mysql-one",
+        "mysql-update",
+        "mysql-remove",
+        "mysql-move",
+        "mysql-deploy",
+        "mysql-start",
+        "mysql-stop",
+        "mysql-reload",
+        "mysql-rebuild",
+        "mysql-changeStatus",
+        "mysql-saveExternalPort",
+        "mysql-saveEnvironment",
+        "compose-create",
+        "compose-remove"
+      ]
+    },
+    "postgres": {
+      "command": "/root/.local/bin/uvx",
+      "args": [
+        "--python",
+        "3.13",
+        "postgres-mcp",
+        "--access-mode=unrestricted",
+        "postgresql://postgres:REDACTED_OLD_POSTGRES_PASSWORD@100.81.25.91:5432/postgres?sslmode=disable"
+      ]
+    },
+    "postgres-trade": {
+      "command": "/root/.local/bin/uvx",
+      "args": [
+        "--python",
+        "3.13",
+        "postgres-mcp",
+        "--access-mode=unrestricted",
+        "postgresql://aeroedge_app:REDACTED_OLD_AEROEDGE_PASSWORD@100.81.25.91:5434/aeroedge?sslmode=disable"
+      ]
+    },
+    "postgres-etf": {
+      "command": "/root/.local/bin/uvx",
+      "args": [
+        "--python",
+        "3.13",
+        "postgres-mcp",
+        "--access-mode=unrestricted",
+        "postgresql://rotation_research:REDACTED_OLD_ROTATION_RESEARCH_PASSWORD@100.81.25.91:5432/rotation_etf?sslmode=disable"
+      ]
+    },
+    "rakazo-connectors": {
+      "command": "/usr/local/bin/node",
+      "args": ["/app/packages/adapters/src/rakazo-mcp-wrapper.mjs"],
+      "env": {
+        "RAKAZO_MCP_SESSION_FILE": "/tmp/rakazo-mcp-session-placeholder.json"
+      }
+    }
+  }
+}
