@@ -1,0 +1,64 @@
+services:
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/dokploy/Dockerfile
+    command: ["bash", "-lc", "pnpm --filter @rakazo/db exec prisma migrate deploy && pnpm --filter @rakazo/api start"]
+    environment:
+      DATABASE_URL: "${DATABASE_URL}"
+      DATA_DIR: /data
+      WAKEUP_DRIVER: graphile
+      AGENT_RUNTIME: devin-cli
+      SANDBOX_PROVIDER: fake
+      DEVIN_CLI_PATH: /usr/local/bin/devin
+      DEVIN_MODEL: "${DEVIN_MODEL:-glm-5-2}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
+      BETTER_AUTH_URL: "${BETTER_AUTH_URL}"
+      API_URL: "${API_URL}"
+      WEB_ORIGIN: "${WEB_ORIGIN}"
+      SIGNUPS_ENABLED: "true"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
+    volumes:
+      - ../../data:/data
+      - devin-config:/root/.config/devin
+    ports:
+      - "3100:3100"
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/dokploy/Dockerfile
+    command: ["pnpm", "--filter", "@rakazo/worker", "start"]
+    environment:
+      DATABASE_URL: "${DATABASE_URL}"
+      DATA_DIR: /data
+      WAKEUP_DRIVER: graphile
+      AGENT_RUNTIME: devin-cli
+      SANDBOX_PROVIDER: fake
+      DEVIN_CLI_PATH: /usr/local/bin/devin
+      DEVIN_MODEL: "${DEVIN_MODEL:-glm-5-2}"
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY}"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
+    volumes:
+      - ../../data:/data
+      - devin-config:/root/.config/devin
+    depends_on:
+      - api
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/dokploy/Dockerfile
+    command: ["pnpm", "--filter", "@rakazo/web", "preview", "--host", "0.0.0.0", "--port", "5173"]
+    environment:
+      API_PROXY_TARGET: http://api:3100
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api
+
+volumes:
+  devin-config:
