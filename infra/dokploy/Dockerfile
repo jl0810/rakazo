@@ -42,6 +42,10 @@ COPY infra/ ./infra/
 # Install deps
 RUN pnpm install --frozen-lockfile=false
 
+# Build-time env vars needed by vite config (secrets guard)
+ENV BETTER_AUTH_SECRET=3b9f04db62f81dd223d3f23eee073321572d64d9f0876d77b29c3e4b03f1e8fe
+ENV ENCRYPTION_KEY=39fe16bb1f45837f8484e0039237c3e16bbbafe034b184cca9ae383cf7146f4e
+
 # Build web
 RUN pnpm --filter @rakazo/web build
 
