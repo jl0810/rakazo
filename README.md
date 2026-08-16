@@ -4,7 +4,7 @@
 
 Open-source Grok Bot alternative, built with Cursor and Grok 4.6.
 
-Web, desktop, and mobile. Bring your own AI and sandbox. The product is still early (beta). Notable product changes are in [`CHANGELOG.md`](./CHANGELOG.md).
+Web, desktop, and mobile. Bring your own AI and sandbox. The product is still early (beta).
 
 Each bot has one thread, one computer, memory, routines, and history. A bot can also spawn more bots — each a regular peer with its own thread and computer — or run short-lived subagents inside the current turn. This repository is the complete core product — it runs without a Rakazo-operated control plane.
 
