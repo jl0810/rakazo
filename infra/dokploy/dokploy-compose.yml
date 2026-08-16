@@ -22,6 +22,9 @@ services:
       - NODE_ENV=production
     volumes:
       - rakazo-data:/data
+    networks:
+      - default
+      - dokploy
     ports:
       - "3100:3100"
 
@@ -58,8 +61,18 @@ services:
       - NODE_ENV=production
     ports:
       - "5173:5173"
+    networks:
+      - default
+      - dokploy
     depends_on:
       - api
+
+networks:
+  default:
+    name: rakazo-internal
+  dokploy:
+    external: true
+    name: dokploy-network
 
 volumes:
   rakazo-data:
