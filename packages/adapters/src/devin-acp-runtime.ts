@@ -3,7 +3,7 @@ import { createServer, type Server as HttpServer } from "node:http";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type {
   AdapterContext,
   AgentRunRequest,
@@ -77,7 +77,7 @@ export class DevinAcpRuntime implements AgentRuntime {
     running.set(request.runId, controller);
     const signal = context.signal ?? controller.signal;
 
-    const queue = createQueue();
+    const queue = createQueue(request.runId);
 
     const work = (async () => {
       let proc: ChildProcess | null = null;
@@ -98,9 +98,11 @@ export class DevinAcpRuntime implements AgentRuntime {
           ensureMcpConfig(sessionFilePath);
         }
 
-        // 3. Spawn Devin CLI (it reads mcp_config.json at startup)
+        // 3. Spawn Devin CLI (it reads mcp_config.json at startup).
+        // Note: `devin acp` ignores DEVIN_PERMISSION_MODE/DEVIN_MODE env vars —
+        // the session mode is set via session/set_config_option after session/new.
         proc = spawn(this.cliPath, ["acp", "--model", this.model], {
-          env: { ...process.env, DEVIN_MODE: "autonomous" },
+          env: { ...process.env },
           stdio: ["pipe", "pipe", "pipe"],
         });
 
@@ -114,48 +116,11 @@ export class DevinAcpRuntime implements AgentRuntime {
 
         const rpc = new AcpClient(proc, request.runId);
 
-        // Handle abort
-        const onAbort = () => {
-          rpc.notify("session/cancel", { sessionId: rpc.sessionId ?? "" });
-          setTimeout(() => proc?.kill("SIGKILL"), 5000);
-        };
-        signal.addEventListener("abort", onAbort, { once: true });
-
-        // 4. Initialize
-        const initResult = await rpc.request("initialize", {
-          protocolVersion: 1,
-          clientInfo: { name: "rakazo", title: "Rakazo", version: "0.1.0" },
-          clientCapabilities: {},
-        });
-        if (!initResult) {
-          queue.push({ type: "text", text: "Failed to initialize Devin ACP session" });
-          queue.push({ type: "done" });
-          return;
-        }
-
-        // 5. Create session (MCP servers are loaded from Devin config file; mode is autonomous for plug-and-play)
-        const sessionResult = await rpc.request("session/new", {
-          cwd: process.cwd(),
-          mcpServers: [],
-          mode: "autonomous",
-        }) as { sessionId?: string } | null;
-
-        if (!sessionResult?.sessionId) {
-          queue.push({ type: "text", text: "Failed to create Devin ACP session" });
-          queue.push({ type: "done" });
-          return;
-        }
-
-        rpc.sessionId = sessionResult.sessionId;
-
-        // 6. Build and send prompt (tools are now available via MCP — no need to list them in the prompt)
-        const prompt = buildAcpPrompt(request);
-        queue.push({ type: "progress", text: `Devin ACP (${this.model}) working…` });
-
-        // Collect updates as they come
+        // Register update handler immediately — messages arrive as soon as the process spawns
         rpc.onUpdate((update) => {
-          const su = update.update as Record<string, unknown>;
+          const su = update.params.update as Record<string, unknown>;
           const kind = su.sessionUpdate as string;
+          try { writeFileSync(`/tmp/devin-onupdate-${request.runId}.log`, `${Date.now()} onUpdate: kind=${kind}\n`, { flag: "a" }); } catch {}
 
           if (kind === "agent_message_chunk") {
             const content = su.content as { type: string; text: string };
@@ -198,6 +163,55 @@ export class DevinAcpRuntime implements AgentRuntime {
           }
         });
 
+        // Handle abort
+        const onAbort = () => {
+          rpc.notify("session/cancel", { sessionId: rpc.sessionId ?? "" });
+          setTimeout(() => proc?.kill("SIGKILL"), 5000);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+
+        // 4. Initialize
+        const initResult = await rpc.request("initialize", {
+          protocolVersion: 1,
+          clientInfo: { name: "rakazo", title: "Rakazo", version: "0.1.0" },
+          clientCapabilities: {},
+        });
+        if (!initResult) {
+          queue.push({ type: "text", text: "Failed to initialize Devin ACP session" });
+          queue.push({ type: "done" });
+          return;
+        }
+
+        // 5. Create session scoped to this bot's home directory so the agent's
+        // workspace is the bot's own files, not the Rakazo repo or the user's Mac home.
+        const botHomeDir = resolve(process.env.DATA_DIR ?? "./data", "homes", request.botId);
+        mkdirSync(botHomeDir, { recursive: true });
+        const sessionResult = await rpc.request("session/new", {
+          cwd: botHomeDir,
+          mcpServers: [],
+        }) as { sessionId?: string } | null;
+
+        if (!sessionResult?.sessionId) {
+          queue.push({ type: "text", text: "Failed to create Devin ACP session" });
+          queue.push({ type: "done" });
+          return;
+        }
+
+        rpc.sessionId = sessionResult.sessionId;
+
+        // 5b. ACP sessions start in accept-edits mode, which prompts for exec tool
+        // calls and stalls headless runs. Bypass is the only unattended mode available
+        // over ACP (no --sandbox support), so set it explicitly.
+        await rpc.request("session/set_config_option", {
+          sessionId: rpc.sessionId,
+          configId: "mode",
+          value: "bypass",
+        });
+
+        // 6. Build and send prompt (tools are now available via MCP — no need to list them in the prompt)
+        const prompt = buildAcpPrompt(request);
+        queue.push({ type: "progress", text: `Devin ACP (${this.model}) working…` });
+
         // 7. Send prompt and wait for completion
         const promptResult = await rpc.request("session/prompt", {
           sessionId: rpc.sessionId,
@@ -227,7 +241,13 @@ export class DevinAcpRuntime implements AgentRuntime {
     })();
 
     try {
-      yield* queue.iterate();
+      for await (const event of queue.iterate()) {
+        if (!event || event.type === undefined) {
+          console.error(`[devin-acp] yielding undefined event from queue, runId=${request.runId}`);
+          continue;
+        }
+        yield event;
+      }
       await work;
     } finally {
       running.delete(request.runId);
@@ -280,6 +300,7 @@ class AcpClient {
   private handleMessage(msg: Record<string, unknown>) {
     const hasMethod = typeof msg.method === "string";
     const hasId = msg.id !== undefined && msg.id !== null;
+    try { writeFileSync(`/tmp/devin-handle-${this.runId}.log`, `${Date.now()} handle: method=${msg.method ?? 'none'} hasMethod=${hasMethod} hasId=${hasId} updateHandler=${!!this.updateHandler}\n`, { flag: "a" }); } catch {}
 
     if (hasMethod && hasId) {
       // Server is sending us a request
@@ -317,6 +338,7 @@ class AcpClient {
         }
       }
     } else if (hasMethod && msg.method === "session/update") {
+      try { writeFileSync(`/tmp/devin-update-call-${this.runId}.log`, `${Date.now()} calling updateHandler: handler=${!!this.updateHandler}\n`, { flag: "a" }); } catch {}
       this.updateHandler?.(msg as JsonRpcNotification);
     }
   }
@@ -330,6 +352,9 @@ class AcpClient {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
       const req: JsonRpcRequest = { jsonrpc: "2.0", id, method, params };
+      try {
+        writeFileSync(`/tmp/devin-acp-messages-${this.runId}.jsonl`, JSON.stringify({ sentAt: Date.now(), direction: "out", method, id, paramsPreview: JSON.stringify(params).slice(0, 2000) }) + "\n", { flag: "a" });
+      } catch {}
       this.pending.set(id, { resolve, reject });
       this.proc.stdin?.write(JSON.stringify(req) + "\n");
 
@@ -367,21 +392,26 @@ function buildAcpPrompt(request: AgentRunRequest): string {
   const parts: string[] = [];
 
   if (request.instructions) {
-    parts.push(request.instructions);
-  }
-
-  if (request.tools.length > 0) {
-    const toolText = request.tools
-      .map((t) => `- ${t.name}: ${t.description}`)
-      .join("\n");
-    parts.push(`You have access to the following Rakazo connector tools via MCP. Use the exact name when calling them:\n${toolText}`);
+    const fixed = request.instructions
+      .replace(
+        /Connected plugins: (.+)\. Use those plugin tools when the user asks about those apps\./,
+        `Connected plugins: $1. These are available via the "${RAKAZO_MCP_SERVER_NAME}" MCP server.`,
+      )
+      // Rewrite tool references for ACP mode: tools are behind the rakazo-connectors MCP server,
+      // not available as direct functions. The agent must use mcp_call_tool to invoke them.
+      .replace(
+        /Use write_file to save files into your home \(they appear in Files\)\. Use shell to run commands in that computer\. Use remember for durable facts\. Use request_takeover when the user must type on the screen\./,
+        `Your Rakazo tools (write_file, shell, remember, request_takeover, spawn_bot, delete_bot, create_routine, list_routines, delete_routine) are available via the "${RAKAZO_MCP_SERVER_NAME}" MCP server. To call them, use mcp_call_tool with server "${RAKAZO_MCP_SERVER_NAME}" and the tool name. Use mcp_list_tools to see all available tools if unsure. These are real tools — call them, do not claim you cannot access them.`,
+      );
+    parts.push(fixed);
   }
 
   if (request.history.length > 0) {
     const historyText = request.history
-      .map((msg) => `[${msg.role}]: ${msg.content}`)
+      .filter((m) => m.role === "user" || m.role === "assistant")
+      .map((msg) => msg.role === "assistant" ? `Assistant: ${msg.content}` : msg.content)
       .join("\n\n");
-    parts.push(`Previous context:\n${historyText}`);
+    if (historyText) parts.push(historyText);
   }
 
   parts.push(request.prompt);
@@ -458,36 +488,37 @@ function startToolExecutor(request: AgentRunRequest): Promise<{ port: number; cl
   });
 }
 
-type QueueItem = AgentRuntimeEvent | { type: "__close__" };
+type QueueItem = AgentRuntimeEvent;
 
-function createQueue() {
+function createQueue(runId: string) {
   const items: QueueItem[] = [];
-  let done = false;
-  let waiters: Array<() => void> = [];
+  let wake: (() => void) | undefined;
+  let closed = false;
 
   return {
     push(item: QueueItem) {
       items.push(item);
-      for (const w of waiters) w();
-      waiters = [];
+      try { writeFileSync(`/tmp/devin-queue-${runId}.log`, `${Date.now()} push: type=${item.type} items=${items.length} wake=${!!wake}\n`, { flag: "a" }); } catch {}
+      wake?.();
     },
     close() {
-      done = true;
-      items.push({ type: "__close__" });
-      for (const w of waiters) w();
-      waiters = [];
+      closed = true;
+      try { writeFileSync(`/tmp/devin-queue-${runId}.log`, `${Date.now()} close: items=${items.length}\n`, { flag: "a" }); } catch {}
+      wake?.();
     },
-    *iterate(): Generator<AgentRuntimeEvent> {
-      while (true) {
-        while (items.length > 0) {
+    async *iterate(): AsyncGenerator<AgentRuntimeEvent> {
+      while (!closed || items.length) {
+        if (items.length) {
           const item = items.shift()!;
-          if (item.type === "__close__") return;
+          try { writeFileSync(`/tmp/devin-queue-${runId}.log`, `${Date.now()} yield: type=${item.type} remaining=${items.length}\n`, { flag: "a" }); } catch {}
           yield item;
+          continue;
         }
-        if (done) return;
-        yield new Promise<void>((resolve) => {
-          waiters.push(resolve);
-        }) as unknown as AgentRuntimeEvent;
+        try { writeFileSync(`/tmp/devin-queue-${runId}.log`, `${Date.now()} waiting: closed=${closed}\n`, { flag: "a" }); } catch {}
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+        try { writeFileSync(`/tmp/devin-queue-${runId}.log`, `${Date.now()} woken: items=${items.length} closed=${closed}\n`, { flag: "a" }); } catch {}
       }
     },
   };
