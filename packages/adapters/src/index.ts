@@ -6,6 +6,8 @@ export * from "./composio-catalog-cache.js";
 export * from "./composio-connector.js";
 export * from "./computer-control.js";
 export * from "./computer-idle.js";
+export * from "./computer-lifecycle.js";
+export * from "./computer-support.js";
 export * from "./computer-tools.js";
 export * from "./computer-workspace.js";
 export * from "./desktop-sandbox.js";

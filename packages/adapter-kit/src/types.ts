@@ -296,8 +296,8 @@ export interface AgentRuntimeCapabilities {
 export interface BackgroundJobPayloads {
   "run.continue": { runId: string };
   "routine.wakeup": { routineId: string; scheduledFor: string };
-  "computer.sleep": { botId: string };
-  "computer.control-expire": { botId: string; leaseId: string };
+  "computer.sleep": { computerId: string };
+  "computer.control-expire": { computerId: string; leaseId: string };
 }
 
 export type BackgroundJobName = keyof BackgroundJobPayloads;

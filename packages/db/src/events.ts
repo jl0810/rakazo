@@ -31,6 +31,7 @@ export interface ThreadEvents {
 
 export interface FinalizeComputerControlReleaseInput {
   workspaceId: string;
+  computerId: string;
   botId: string;
   leaseId: string;
   holder: "bot" | "none";
@@ -218,11 +219,12 @@ export async function finalizeComputerControlRelease(
 ): Promise<boolean> {
   const committed = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     const cleared = await tx.computer.updateMany({
-      where: { botId: input.botId, controlLeaseId: input.leaseId },
+      where: { id: input.computerId, controlLeaseId: input.leaseId },
       data: {
         controlHolder: input.holder,
         controlLeaseId: null,
         controlLeaseExpiresAt: null,
+        controlBotId: null,
       },
     });
     if (cleared.count !== 1) return null;
