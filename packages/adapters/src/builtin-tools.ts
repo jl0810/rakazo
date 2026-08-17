@@ -52,6 +52,45 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "create_routine",
+    description:
+      "Create a recurring scheduled job for this bot. When the cron schedule fires, the prompt is sent to this bot as a new task in its own thread. Use this when the user asks for recurring or scheduled work (e.g. 'every morning', 'nightly', 'every Monday'). Confirm the schedule with the user if it is ambiguous.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Short label shown in the routines list." },
+        prompt: {
+          type: "string",
+          description: "The instruction this bot will execute each time the schedule fires.",
+        },
+        cron: {
+          type: "string",
+          description:
+            "Standard 5-field cron expression, e.g. '0 9 * * *' for daily at 9:00 UTC or '0 7 * * 1' for Mondays at 7:00 UTC.",
+        },
+        timezone: { type: "string", description: "IANA timezone, defaults to UTC." },
+      },
+      required: ["name", "prompt", "cron"],
+    },
+  },
+  {
+    name: "list_routines",
+    description: "List this bot's recurring scheduled jobs (routines).",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "delete_routine",
+    description:
+      "Delete one of this bot's routines by exact name. Only delete when the user asked.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Exact name of the routine to delete." },
+      },
+      required: ["name"],
+    },
+  },
+  {
     name: "run_subagent",
     description:
       "Run a short-lived helper inside this turn only. It is not a bot: no list entry, no thread, no computer of its own, and it disappears when this turn ends. Never call this because the user asked to create a bot — that is spawn_bot, and spawn_bot alone.",

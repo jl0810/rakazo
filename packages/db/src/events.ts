@@ -1,6 +1,23 @@
 import type { ProductEvent } from "@rakazo/contracts";
 import type { Notification, Pool, PoolClient } from "pg";
 import type { Prisma, PrismaClient } from "./client.js";
+import { PrismaClientKnownRequestError } from "./client.js";
+
+// P2002 is Prisma's unique-constraint violation. The (threadId, seq) pair can
+// collide when two concurrent appends to the same thread both read the same
+// max(seq) under READ COMMITTED. We retry the read+write instead of failing,
+// since the next attempt will observe the now-committed higher seq.
+const SEQ_RACE_MAX_ATTEMPTS = 8;
+const SEQ_RACE_BASE_DELAY_MS = 5;
+
+function isSeqUniqueViolation(error: unknown): boolean {
+  return (
+    error instanceof PrismaClientKnownRequestError &&
+    error.code === "P2002" &&
+    Array.isArray(error.meta?.target) &&
+    (error.meta?.target as string[]).includes("seq")
+  );
+}
 
 export async function appendEvent(
   prisma: PrismaClient,
@@ -13,25 +30,38 @@ export async function appendEvent(
     runId?: string;
   },
 ): Promise<ProductEvent> {
-  const event = await prisma.$transaction(async (tx) => {
-    const last = await tx.event.findFirst({
-      where: { threadId: input.threadId },
-      orderBy: { seq: "desc" },
-      select: { seq: true },
-    });
-    const seq = (last?.seq ?? -1) + 1;
-    return tx.event.create({
-      data: {
-        workspaceId: input.workspaceId,
-        threadId: input.threadId,
-        botId: input.botId,
-        seq,
-        type: input.type,
-        payload: input.payload as Prisma.InputJsonValue,
-        runId: input.runId,
-      },
-    });
-  });
+  let event;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      event = await prisma.$transaction(async (tx) => {
+        const last = await tx.event.findFirst({
+          where: { threadId: input.threadId },
+          orderBy: { seq: "desc" },
+          select: { seq: true },
+        });
+        const seq = (last?.seq ?? -1) + 1;
+        return tx.event.create({
+          data: {
+            workspaceId: input.workspaceId,
+            threadId: input.threadId,
+            botId: input.botId,
+            seq,
+            type: input.type,
+            payload: input.payload as Prisma.InputJsonValue,
+            runId: input.runId,
+          },
+        });
+      });
+      break;
+    } catch (error) {
+      if (isSeqUniqueViolation(error) && attempt < SEQ_RACE_MAX_ATTEMPTS) {
+        const delay = SEQ_RACE_BASE_DELAY_MS * 2 ** (attempt - 1);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+      throw error;
+    }
+  }
   await prisma.$executeRaw`SELECT pg_notify('rakazo_events', ${JSON.stringify({
     workspaceId: event.workspaceId,
     threadId: event.threadId,
