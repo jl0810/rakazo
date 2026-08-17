@@ -3,6 +3,7 @@ import { Id } from "./ids.js";
 
 export const ProductEventType = z.enum([
   "thread.message.created",
+  "thread.message.updated",
   "thread.progress",
   "thread.artifact",
   "thread.ask",
@@ -12,6 +13,7 @@ export const ProductEventType = z.enum([
   "thread.subagent",
   "run.started",
   "run.checkpointed",
+  "run.waiting_input",
   "run.completed",
   "run.failed",
   "run.cancelled",
@@ -24,9 +26,11 @@ export const ProductEventType = z.enum([
   "routine.updated",
   "routine.fired",
   "effect.recorded",
+  "agent.tool.called",
   "effect.reconciled",
   "usage.recorded",
   "bot.spawned",
+  "bot.archived",
   "bot.deleted",
 ]);
 export type ProductEventType = z.infer<typeof ProductEventType>;
@@ -43,6 +47,8 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     kind: z.literal("ask"),
     text: z.string(),
     detail: z.string().optional(),
+    status: z.enum(["pending", "answered"]).optional(),
+    answer: z.string().optional(),
     actions: z.array(z.object({ id: z.string(), label: z.string() })).optional(),
   }),
   z.object({
@@ -79,7 +85,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     botId: z.string(),
     name: z.string(),
     title: z.string().optional(),
-    status: z.enum(["created", "deleted"]),
+    status: z.enum(["created", "archived", "deleted"]),
   }),
 ]);
 export type MessageBlock = z.infer<typeof MessageBlock>;

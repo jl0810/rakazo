@@ -85,6 +85,7 @@ model Organization {
   members     Member[]
   invitations Invitation[]
   bots        Bot[]
+  botDeletions BotDeletion[]
   threads     Thread[]
   events      Event[]
   tasks       Task[]
@@ -179,13 +180,18 @@ model Bot {
   instructions   String   @default("")
   color          String
   notifyOnFinish Boolean  @default(true)
+  pinned         Boolean  @default(false)
+  archivedAt     DateTime?
   parentBotId    String?
+  spawnKey       String?
   parent         Bot?     @relation("BotChildren", fields: [parentBotId], references: [id], onDelete: SetNull)
   children       Bot[]    @relation("BotChildren")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   thread         Thread?
-  computer       Computer?
+  computerId     String?
+  computer       Computer? @relation(fields: [computerId], references: [id], onDelete: SetNull)
+  computerSwitching Boolean @default(false)
   routines       Routine[]
   memoryDocuments MemoryDocument[]
   agentHome      AgentHome?
@@ -195,9 +201,24 @@ model Bot {
   tasks          Task[]
   runs           Run[]
 
-  @@index([workspaceId, userId])
+  @@index([workspaceId, userId, archivedAt, pinned, updatedAt])
+  @@index([computerId])
   @@index([parentBotId])
+  @@unique([workspaceId, spawnKey])
   @@map("bots")
+}
+
+model BotDeletion {
+  id                String   @id
+  workspaceId       String
+  workspace         Organization @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name              String
+  deletedByUserId   String
+  memoriesPreserved Boolean
+  deletedAt         DateTime @default(now())
+
+  @@index([workspaceId, deletedAt])
+  @@map("bot_deletions")
 }
 
 model Thread {
@@ -208,6 +229,9 @@ model Thread {
   bot         Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
   userId      String
   createdAt   DateTime @default(now())
+  nextEventSeq   Int   @default(0)
+  nextMessageSeq Int   @default(0)
+  unread      Boolean  @default(false)
   messages    Message[]
   events      Event[]
   tasks       Task[]
@@ -248,6 +272,7 @@ model Event {
   @@unique([threadId, seq])
   @@index([workspaceId, createdAt])
   @@index([threadId, seq])
+  @@index([runId, type, seq])
   @@map("events")
 }
 
@@ -301,6 +326,7 @@ model Run {
 
   @@unique([workspaceId, clientNonce])
   @@index([status, leaseExpiresAt])
+  @@index([status, updatedAt, id])
   @@index([workspaceId, botId])
   @@map("runs")
 }
@@ -459,22 +485,32 @@ model BrowserProfile {
 }
 
 model Computer {
-  id           String   @id @default(cuid())
-  workspaceId  String
-  workspace    Organization @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  botId        String   @unique
-  bot          Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
-  userId       String
-  kind         String
-  providerRef  String?
-  state        String   @default("stopped")
-  controlHolder String  @default("none")
-  controlLeaseId String?
-  controlFence Int      @default(0)
-  screenUrl    String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                      String   @id @default(cuid())
+  workspaceId             String
+  workspace               Organization @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId                   String
+  scope                    String   @default("team")
+  scopeKey                 String   @unique
+  homeKey                  String   @unique
+  homeRevision             String   @default("empty")
+  kind                     String
+  providerRef              String?
+  state                    String   @default("stopped")
+  controlHolder            String   @default("none")
+  controlLeaseId           String?
+  controlLeaseExpiresAt    DateTime?
+  controlBotId             String?
+  controlFence             Int      @default(0)
+  executionRunId           String?
+  executionBotId           String?
+  executionLeaseExpiresAt  DateTime?
+  executionFence           Int      @default(0)
+  screenUrl                String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+  bots                     Bot[]
 
+  @@index([workspaceId, scope])
   @@map("computers")
 }
 

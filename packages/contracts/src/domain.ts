@@ -2,6 +2,9 @@ import * as z from "zod";
 import { ThreadMessageSchema } from "./events.js";
 import { Id, MemoryScope, RunStatus, SandboxKind } from "./ids.js";
 
+export const ComputerModeSchema = z.enum(["team", "dedicated"]);
+export type ComputerMode = z.infer<typeof ComputerModeSchema>;
+
 export const BotSchema = z.object({
   id: Id,
   workspaceId: Id,
@@ -11,10 +14,14 @@ export const BotSchema = z.object({
   instructions: z.string(),
   color: z.string(),
   notifyOnFinish: z.boolean(),
+  pinned: z.boolean(),
+  archivedAt: z.string().nullable(),
+  unread: z.boolean(),
   parentBotId: Id.nullable(),
   threadId: Id,
   preview: z.string(),
   status: z.string(),
+  computerMode: ComputerModeSchema,
   updatedAt: z.string(),
   createdAt: z.string(),
 });
@@ -27,6 +34,7 @@ export const CreateBotInput = z.object({
   instructions: z.string().max(20000).default(""),
   notifyOnFinish: z.boolean().default(true),
   color: z.string().optional(),
+  computerMode: ComputerModeSchema.default("team"),
 });
 export type CreateBotInput = z.infer<typeof CreateBotInput>;
 
@@ -38,6 +46,7 @@ export const UpdateBotInput = z.object({
   instructions: z.string().max(20000).optional(),
   notifyOnFinish: z.boolean().optional(),
   color: z.string().optional(),
+  pinned: z.boolean().optional(),
 });
 
 export const RoutineSchema = z.object({
@@ -130,11 +139,13 @@ export const UsageRecordSchema = z.object({
 
 export const ComputerStatusSchema = z.object({
   botId: Id,
+  mode: ComputerModeSchema,
   kind: SandboxKind,
   state: z.enum(["stopped", "booting", "running", "suspended", "error"]),
   controlHolder: z.enum(["bot", "user", "none"]),
   screenAvailable: z.boolean(),
   homeRevision: z.string().nullable(),
+  busyBotName: z.string().nullable(),
 });
 export type ComputerStatus = z.infer<typeof ComputerStatusSchema>;
 
@@ -153,11 +164,19 @@ export const RunSchema = z.object({
 });
 export type Run = z.infer<typeof RunSchema>;
 
+export const ThreadMessagePageSchema = z.object({
+  threadId: Id,
+  messages: z.array(ThreadMessageSchema),
+  olderCursor: z.number().int().nonnegative().nullable(),
+});
+export type ThreadMessagePage = z.infer<typeof ThreadMessagePageSchema>;
+
 export const ThreadSnapshotSchema = z.object({
   botId: Id,
   threadId: Id,
   cursor: z.number().int().min(-1),
   messages: z.array(ThreadMessageSchema),
+  olderCursor: z.number().int().nonnegative().nullable(),
   run: RunSchema.nullable(),
   computer: ComputerStatusSchema,
 });

@@ -67,5 +67,16 @@ function local(base: Date, daysAgo: number, hours: number, minutes: number) {
 }
 
 function bot(id: string, name: string, title: string, preview: string) {
-  return { id, name, title, preview, color: "#9B5CF6", updatedAt: now.toISOString() };
+  return {
+    id,
+    name,
+    computerMode: "team" as const,
+    title,
+    preview,
+    color: "#9B5CF6",
+    pinned: false,
+    archivedAt: null,
+    unread: false,
+    updatedAt: now.toISOString(),
+  };
 }

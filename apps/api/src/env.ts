@@ -2,6 +2,7 @@ import { resolveAuthSecret, resolveEncryptionKey, resolveSupervisorToken } from 
 
 export interface AppEnv {
   databaseUrl: string;
+  realtimeDatabaseUrl: string;
   authSecret: string;
   authUrl: string;
   webOrigin: string;
@@ -18,6 +19,9 @@ export interface AppEnv {
   devinApiKey: string | undefined;
   devinOrgId: string | undefined;
   e2bApiKey: string | undefined;
+  daytonaApiKey: string | undefined;
+  daytonaApiUrl: string | undefined;
+  daytonaTarget: string | undefined;
   composioApiKey: string | undefined;
   defaultProvider: string;
   defaultModel: string;
@@ -29,6 +33,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
   const authSecret = resolveAuthSecret(source);
   return {
     databaseUrl: required(source, "DATABASE_URL"),
+    realtimeDatabaseUrl: source.REALTIME_DATABASE_URL ?? required(source, "DATABASE_URL"),
     authSecret,
     authUrl: source.BETTER_AUTH_URL ?? source.WEB_ORIGIN ?? "http://127.0.0.1:5173",
     webOrigin: source.WEB_ORIGIN ?? "http://127.0.0.1:5173",
@@ -45,6 +50,9 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     devinApiKey: source.DEVIN_API_KEY,
     devinOrgId: source.DEVIN_ORG_ID,
     e2bApiKey: source.E2B_API_KEY,
+    daytonaApiKey: source.DAYTONA_API_KEY,
+    daytonaApiUrl: source.DAYTONA_API_URL,
+    daytonaTarget: source.DAYTONA_TARGET,
     composioApiKey: source.COMPOSIO_API_KEY,
     defaultProvider: source.PI_DEFAULT_PROVIDER ?? "openrouter",
     defaultModel: source.PI_DEFAULT_MODEL ?? "deepseek/deepseek-v4-flash-0731",

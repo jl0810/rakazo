@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { E2BSandboxProvider, PiAgentRuntime } from "@rakazo/adapters";
 import { afterAll, describe, expect, it } from "vitest";
+import { sessionCookieHeader } from "./index.js";
 
 function loadEnvFile() {
   const file = path.resolve(".env");
@@ -42,13 +43,16 @@ describeE2b("live E2B canary", () => {
       { botId: "canary", homePath: "/home/user/rakazo-home" },
       ctx,
     );
-    let stdout = "";
-    for await (const event of sandbox.execute(computer, { argv: ["echo", "e2b-ok"] }, ctx)) {
-      if (event.type === "stdout") stdout += event.data;
-      if (event.type === "exit") expect(event.code).toBe(0);
+    try {
+      let stdout = "";
+      for await (const event of sandbox.execute(computer, { argv: ["echo", "e2b-ok"] }, ctx)) {
+        if (event.type === "stdout") stdout += event.data;
+        if (event.type === "exit") expect(event.code).toBe(0);
+      }
+      expect(stdout).toContain("e2b-ok");
+    } finally {
+      await sandbox.destroy(computer, ctx);
     }
-    expect(stdout).toContain("e2b-ok");
-    await sandbox.destroy(computer, ctx);
   }, 120_000);
 });
 
@@ -112,7 +116,7 @@ describePiApp("live OpenRouter product journey", () => {
       body: JSON.stringify({ email, password: "password12", name: "Pi Canary" }),
     });
     expect(signup.status).toBeLessThan(400);
-    const cookie = cookieHeader(signup);
+    const cookie = sessionCookieHeader(signup);
     const botRes = await rpc<{ id: string }>(handles.app, cookie, "bots/create", {
       name: "Chief",
       title: "Chief of staff",
@@ -146,13 +150,6 @@ type Snap = {
   messages: Array<{ role: string; blocks: unknown[] }>;
   run: { status: string } | null;
 };
-
-function cookieHeader(res: Response) {
-  const many = res.headers.getSetCookie?.() ?? [];
-  if (many.length) return many.map((c) => c.split(";")[0]).join("; ");
-  const single = res.headers.get("set-cookie");
-  return single ? (single.split(",")[0]?.split(";")[0] ?? "") : "";
-}
 
 async function rpc<T>(app: App, cookie: string, proc: string, body: unknown = {}): Promise<T> {
   const res = await app.request(`/rpc/${proc}`, {

@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     xdotool \
     x11-utils \
     x11-xserver-utils \
+    imagemagick \
     novnc \
     websockify \
     python3 \
@@ -32,5 +33,5 @@ COPY fluxbox.apps /etc/rakazo/fluxbox/apps
 COPY fluxbox.menu /etc/rakazo/fluxbox/menu
 COPY embed.html /usr/share/novnc/embed.html
 RUN chmod +x /usr/local/bin/rakazo-computer /usr/local/bin/rakazo-browser
-EXPOSE 6080
+EXPOSE 6080 6081
 CMD ["/usr/local/bin/rakazo-computer"]

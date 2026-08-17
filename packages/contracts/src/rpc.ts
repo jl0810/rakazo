@@ -4,6 +4,7 @@ import {
   ArtifactSchema,
   BotSchema,
   CapabilityInstallSchema,
+  ComputerModeSchema,
   ComputerStatusSchema,
   ConnectionCatalogItemSchema,
   ConnectionSchema,
@@ -15,6 +16,7 @@ import {
   MeSchema,
   ModelCredentialSchema,
   RoutineSchema,
+  ThreadMessagePageSchema,
   ThreadSnapshotSchema,
   UpdateBotInput,
   UsageRecordSchema,
@@ -97,15 +99,23 @@ export const appContract = {
   },
   bots: {
     list: oc.output(z.array(BotSchema)),
+    listArchived: oc.output(z.array(BotSchema)),
     get: oc.input(botId).output(BotSchema),
     create: oc.input(CreateBotInput).output(BotSchema),
+    duplicate: oc.input(botId).output(BotSchema),
     update: oc.input(UpdateBotInput).output(BotSchema),
-    remove: oc.input(botId).output(z.object({ ok: z.literal(true) })),
+    setComputer: oc.input(z.object({ botId: Id, mode: ComputerModeSchema })).output(BotSchema),
+    archive: oc.input(botId).output(z.object({ ok: z.literal(true) })),
+    restore: oc.input(botId).output(z.object({ ok: z.literal(true) })),
+    remove: oc
+      .input(z.object({ botId: Id, deleteMemories: z.boolean().default(false) }))
+      .output(z.object({ ok: z.literal(true) })),
   },
   threads: {
-    get: oc
-      .input(z.object({ botId: Id, afterSeq: z.number().int().min(-1).optional() }))
-      .output(ThreadSnapshotSchema),
+    get: oc.input(z.object({ botId: Id })).output(ThreadSnapshotSchema),
+    messages: oc
+      .input(z.object({ botId: Id, before: z.number().int().nonnegative() }))
+      .output(ThreadMessagePageSchema),
     subscribe: oc
       .input(z.object({ botId: Id, cursor: z.number().int().min(-1) }))
       .output(eventIterator(ProductEventSchema)),
@@ -123,8 +133,10 @@ export const appContract = {
       .input(z.object({ botId: Id, text: z.string().min(1) }))
       .output(z.object({ ok: z.literal(true) })),
     answer: oc
-      .input(z.object({ botId: Id, runId: Id, answer: z.string().min(1) }))
+      .input(z.object({ botId: Id, runId: Id, messageId: Id, answer: z.string().min(1) }))
       .output(z.object({ ok: z.literal(true) })),
+    markRead: oc.input(botId).output(z.object({ ok: z.literal(true) })),
+    markUnread: oc.input(botId).output(z.object({ ok: z.literal(true) })),
   },
   computer: {
     status: oc.input(botId).output(ComputerStatusSchema),

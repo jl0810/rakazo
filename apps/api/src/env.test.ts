@@ -14,7 +14,7 @@ describe("loadEnv", () => {
     expect(env.wakeupDriver).toBe("graphile");
   });
 
-  it("keeps explicit emulator settings for pnpm verify:fast", () => {
+  it("keeps explicit emulator settings for pnpm test", () => {
     const env = loadEnv({
       ...base,
       AGENT_RUNTIME: "scripted",
@@ -24,6 +24,22 @@ describe("loadEnv", () => {
     expect(env.agentRuntime).toBe("scripted");
     expect(env.sandboxProvider).toBe("fake");
     expect(env.wakeupDriver).toBe("memory");
+  });
+
+  it("loads provider-specific Daytona configuration", () => {
+    const env = loadEnv({
+      ...base,
+      SANDBOX_PROVIDER: "daytona",
+      DAYTONA_API_KEY: "test-daytona-key",
+      DAYTONA_API_URL: "https://daytona.test/api",
+      DAYTONA_TARGET: "test-target",
+    });
+    expect(env).toMatchObject({
+      sandboxProvider: "daytona",
+      daytonaApiKey: "test-daytona-key",
+      daytonaApiUrl: "https://daytona.test/api",
+      daytonaTarget: "test-target",
+    });
   });
 
   it("throws when production omits secrets", () => {

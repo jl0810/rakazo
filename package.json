@@ -1,6 +1,7 @@
 {
   "name": "rakazo",
   "private": true,
+  "type": "module",
   "version": "0.1.0",
   "license": "Apache-2.0",
   "packageManager": "pnpm@9.15.0",
@@ -16,12 +17,14 @@
     "db:generate": "pnpm --filter @rakazo/db generate",
     "db:migrate": "pnpm --filter @rakazo/db migrate",
     "sandbox:build": "docker build -t rakazo/computer:local infra/sandboxes/computer",
-    "verify:fast": "vitest run",
-    "verify": "tsx packages/testkit/src/cli/verify.ts",
-    "verify:providers": "tsx packages/testkit/src/cli/verify.ts --providers",
-    "e2e": "pnpm --filter @rakazo/web exec playwright test",
-    "compose:up": "docker compose -f infra/compose/docker-compose.yml up --build",
-    "compose:down": "docker compose -f infra/compose/docker-compose.yml down -v"
+    "test": "vitest run",
+    "test:integration": "tsx packages/testkit/src/cli/harness.ts --integration",
+    "test:e2e": "tsx packages/testkit/src/cli/harness.ts --e2e",
+    "test:topology": "tsx packages/testkit/src/cli/topology.ts",
+    "test:canary": "tsx packages/testkit/src/cli/canary.ts",
+    "test:computer": "tsx packages/testkit/src/cli/computer.ts",
+    "compose:up": "docker compose --env-file .env -f infra/compose/docker-compose.yml up --build",
+    "compose:down": "docker compose --env-file .env -f infra/compose/docker-compose.yml down -v"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
@@ -33,8 +36,8 @@
   },
   "pnpm": {
     "overrides": {
-      "react": "19.0.0",
-      "react-dom": "19.0.0"
+      "react": "19.2.3",
+      "react-dom": "19.2.3"
     }
   }
 }

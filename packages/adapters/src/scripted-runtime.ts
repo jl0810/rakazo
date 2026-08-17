@@ -4,6 +4,7 @@ import type {
   AgentRuntime,
   AgentRuntimeEvent,
 } from "@rakazo/adapter-kit";
+import { abortableDelay } from "@rakazo/core";
 
 const running = new Map<string, AbortController>();
 
@@ -26,9 +27,19 @@ export class ScriptedAgentRuntime implements AgentRuntime {
     running.set(request.runId, controller);
     const signal = context.signal ?? controller.signal;
     try {
+      if (shouldHang(request.prompt)) {
+        yield { type: "progress", text: "still working…" };
+        while (!controller.signal.aborted && !signal.aborted) {
+          await abortableDelay(50, controller.signal);
+          if (controller.signal.aborted || signal.aborted) break;
+          yield { type: "progress", text: "still working…" };
+        }
+        yield { type: "done", text: "stopped" };
+        return;
+      }
       const script = request.script ?? inferScript(request.prompt, request.resumeFromCheckpoint);
       for (const turn of script) {
-        if (signal.aborted) {
+        if (signal.aborted || controller.signal.aborted) {
           yield { type: "done", text: "stopped" };
           return;
         }
@@ -95,6 +106,7 @@ export class ScriptedAgentRuntime implements AgentRuntime {
       yield { type: "text", text: "done." };
       yield { type: "done", text: "done." };
     } finally {
+      controller.abort();
       running.delete(request.runId);
     }
   }
@@ -118,6 +130,18 @@ export function inferScript(
       },
     ];
   }
+  if (
+    lower.includes("ask me") ||
+    lower.includes("which city") ||
+    lower.includes("need a decision")
+  ) {
+    return [
+      {
+        assistant: "i need a decision before i continue.",
+        ask: { text: "Which city should I use?", detail: "Reply with one city name." },
+      },
+    ];
+  }
   if (lower.includes("take over") || lower.includes("sign in") || lower.includes("login")) {
     return [
       { assistant: "i need you on the screen for a one-time sign-in. handing you the computer." },
@@ -132,8 +156,8 @@ export function inferScript(
     const name = namedBot(prompt) ?? "Scout";
     return [
       {
-        assistant: "removing that bot permanently.",
-        toolCalls: [{ name: "delete_bot", args: { confirm_name: name } }],
+        assistant: "archiving that bot.",
+        toolCalls: [{ name: "archive_bot", args: { confirm_name: name } }],
         complete: true,
       },
     ];
@@ -192,11 +216,12 @@ export function inferScript(
   ) {
     const said = /says?\s+(.+)$/i.exec(prompt)?.[1]?.replace(/[.]+$/, "") ?? prompt;
     const content = `${said.trim()}\n`;
+    const filePath =
+      /(?:called|named)\s+([A-Za-z0-9._/-]+)/i.exec(prompt)?.[1] ?? "notes/result.txt";
     return [
       { assistant: "writing that into my home now." },
       {
-        toolCalls: [{ name: "write_file", args: { path: "notes/result.txt", content } }],
-        files: [{ path: "notes/result.txt", content }],
+        toolCalls: [{ name: "write_file", args: { path: filePath, content } }],
         complete: true,
       },
     ];
@@ -219,6 +244,16 @@ export function inferScript(
       complete: true,
     },
   ];
+}
+
+function shouldHang(prompt: string): boolean {
+  const lower = prompt.toLowerCase();
+  return (
+    lower.includes("keep working") ||
+    lower.includes("work until i stop") ||
+    lower.includes("until i stop you") ||
+    lower.includes("hang until stopped")
+  );
 }
 
 function namedBot(prompt: string) {

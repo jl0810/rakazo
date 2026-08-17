@@ -1,6 +1,7 @@
 import { ChatMarkdown } from "@rakazo/chat-ui/web";
 import type {
   Bot,
+  ComputerMode,
   ComputerStatus,
   ProductEvent,
   Routine,
@@ -8,17 +9,34 @@ import type {
   ThreadSnapshot,
 } from "@rakazo/contracts";
 import {
+  abortableDelay,
   cronFromPreset,
   defaultCronPreset,
   formatCron,
+  isActive,
   presetFromCron,
-  subagentBlockFromPayload,
 } from "@rakazo/core";
 import { BotAvatar, Button } from "@rakazo/ui-web";
-import { type Dispatch, type SetStateAction, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type Dispatch,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { authClient } from "../lib/auth";
 import { rpc } from "../lib/rpc";
+import {
+  isComputerStatusEvent,
+  mergeThreadSnapshot,
+  prependThreadMessagePage,
+  reduceComputerStatus,
+  reduceThreadSnapshot,
+} from "../lib/thread-events";
+import { BotContextMenu, type ContextMenuPosition } from "./BotContextMenu";
 import { HostComputerPrompt } from "./HostComputerPrompt";
 import { PluginsOverlay } from "./PluginsOverlay";
 import { RoutineSchedule } from "./RoutineSchedule";
@@ -31,6 +49,8 @@ export function ShellPage() {
   const navigate = useNavigate();
   const session = authClient.useSession();
   const [bots, setBots] = useState<Bot[]>([]);
+  const [archivedBots, setArchivedBots] = useState<Bot[]>([]);
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [snapshot, setSnapshot] = useState<ThreadSnapshot | null>(null);
   const [draft, setDraft] = useState("");
@@ -39,7 +59,13 @@ export function ShellPage() {
   const [computer, setComputer] = useState<ComputerStatus | null>(null);
   const [pluginsOpen, setPluginsOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [botMenu, setBotMenu] = useState<{
+    botId: string;
+    position: ContextMenuPosition;
+  } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Bot | null>(null);
   const [booting, setBooting] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [routineDraft, setRoutineDraft] = useState({
     name: "",
     prompt: "",
@@ -53,96 +79,218 @@ export function ShellPage() {
     runs: number;
   } | null>(null);
   const autoBooted = useRef<string | null>(null);
+  const expandedHistoryThread = useRef<string | null>(null);
+  const messageScroll = useRef<HTMLDivElement>(null);
+  const manuallyUnread = useRef(new Set<string>());
+  const computerVisible = useRef(false);
+  computerVisible.current = panel === "computer" || computerOpen;
 
   const active = bots.find((b) => b.id === botId) ?? bots[0];
+  const activeBotId = useRef<string | undefined>(active?.id);
+  activeBotId.current = active?.id;
+  const screenRequest = useRef(0);
+  const contextBot = botMenu ? bots.find((bot) => bot.id === botMenu.botId) : undefined;
+  const closeBotMenu = useCallback(() => setBotMenu(null), []);
+  const updateBotUnread = useCallback((id: string, unread: boolean) => {
+    setBots((current) => {
+      const bot = current.find((candidate) => candidate.id === id);
+      if (!bot || bot.unread === unread) return current;
+      return current.map((candidate) =>
+        candidate.id === id ? { ...candidate, unread } : candidate,
+      );
+    });
+  }, []);
+  const markBotRead = useCallback(
+    async (id: string) => {
+      await rpc.threads.markRead({ botId: id });
+      manuallyUnread.current.delete(id);
+      updateBotUnread(id, false);
+    },
+    [updateBotUnread],
+  );
+  const markBotUnread = useCallback(
+    async (id: string) => {
+      manuallyUnread.current.add(id);
+      try {
+        await rpc.threads.markUnread({ botId: id });
+      } catch (err) {
+        manuallyUnread.current.delete(id);
+        throw err;
+      }
+      updateBotUnread(id, true);
+    },
+    [updateBotUnread],
+  );
+  // A bot the user marked unread by hand stays unread until they open it again,
+  // otherwise the auto-read below would undo the action on the next window focus.
+  const markBotReadIfVisible = useCallback(
+    (id: string) => {
+      if (manuallyUnread.current.has(id)) return;
+      if (document.visibilityState === "visible" && document.hasFocus()) {
+        void markBotRead(id).catch(() => undefined);
+      }
+    },
+    [markBotRead],
+  );
 
-  async function refreshBots() {
-    const list = await rpc.bots.list();
+  async function refreshBots(includeArchived = false) {
+    const [list, archived] = await Promise.all([
+      rpc.bots.list(),
+      includeArchived ? rpc.bots.listArchived() : Promise.resolve(null),
+    ]);
     setBots(list);
-    if (list.length === 0) {
+    if (archived) setArchivedBots(archived);
+    if (includeArchived && list.length === 0 && archived?.length === 0) {
       navigate("/onboarding", { replace: true });
       return;
     }
     if (!botId || !list.some((bot) => bot.id === botId)) {
-      navigate(`/app/${list[0]!.id}`, { replace: true });
+      navigate(list[0] ? `/app/${list[0].id}` : "/app", { replace: true });
     }
   }
 
   async function refreshThread(id: string) {
+    const scrollElement = messageScroll.current;
+    const stickToEnd =
+      !scrollElement ||
+      scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight < 80;
     const snap = await rpc.threads.get({ botId: id });
-    setSnapshot(snap);
+    setSnapshot((prev) =>
+      mergeThreadSnapshot(prev, snap, expandedHistoryThread.current === snap.threadId),
+    );
     setComputer(snap.computer);
-    const r = await rpc.routines.list({ botId: id });
-    setRoutines(r);
-    if (panel === "computer" || computerOpen) {
-      const screen = await rpc.computer.screenUrl({ botId: id }).catch(() => ({ url: null }));
-      setScreenUrl(screen.url);
+    const routines = await rpc.routines.list({ botId: id });
+    setRoutines(routines);
+    await refreshComputerScreen(id);
+    if (stickToEnd) {
+      window.requestAnimationFrame(() => {
+        const element = messageScroll.current;
+        if (element) element.scrollTop = element.scrollHeight;
+      });
     }
     return snap;
   }
 
+  async function refreshComputerScreen(id: string) {
+    if (!computerVisible.current) return;
+    const request = ++screenRequest.current;
+    const screen = await rpc.computer.screenUrl({ botId: id }).catch(() => ({ url: null }));
+    if (
+      request !== screenRequest.current ||
+      activeBotId.current !== id ||
+      !computerVisible.current
+    ) {
+      return;
+    }
+    setScreenUrl(screen.url);
+  }
+
+  async function loadOlderMessages() {
+    if (!active || snapshot?.olderCursor == null || loadingOlder) return;
+    const scrollElement = messageScroll.current;
+    const previousHeight = scrollElement?.scrollHeight ?? 0;
+    setLoadingOlder(true);
+    try {
+      const page = await rpc.threads.messages({
+        botId: active.id,
+        before: snapshot.olderCursor,
+      });
+      expandedHistoryThread.current = page.threadId;
+      setSnapshot((prev) => prependThreadMessagePage(prev, page));
+      window.requestAnimationFrame(() => {
+        const element = messageScroll.current;
+        if (element) element.scrollTop += element.scrollHeight - previousHeight;
+      });
+    } finally {
+      setLoadingOlder(false);
+    }
+  }
+
   useEffect(() => {
-    void refreshBots();
+    void refreshBots(true);
     const poll = window.setInterval(() => void refreshBots().catch(() => undefined), 4000);
     return () => window.clearInterval(poll);
   }, []);
 
   useEffect(() => {
     if (!active) return;
+    // Opening a bot clears the manual unread flag so it can auto-read again.
+    manuallyUnread.current.delete(active.id);
+    const markVisibleBotRead = () => {
+      markBotReadIfVisible(active.id);
+    };
+    markVisibleBotRead();
+    window.addEventListener("focus", markVisibleBotRead);
+    document.addEventListener("visibilitychange", markVisibleBotRead);
+    return () => {
+      window.removeEventListener("focus", markVisibleBotRead);
+      document.removeEventListener("visibilitychange", markVisibleBotRead);
+    };
+  }, [active?.id, markBotReadIfVisible]);
+
+  useEffect(() => {
+    if (!active) return;
+    screenRequest.current += 1;
+    setScreenUrl(null);
+    expandedHistoryThread.current = null;
     const abort = new AbortController();
-    let fallback: number | undefined;
     void (async () => {
       const snap = await refreshThread(active.id).catch(() => null);
       if (abort.signal.aborted) return;
-      try {
-        const events = await rpc.threads.subscribe(
-          { botId: active.id, cursor: snap?.cursor ?? -1 },
-          { signal: abort.signal },
-        );
-        for await (const event of events) {
-          if (abort.signal.aborted) break;
-          applyThreadEvent(event, setSnapshot, setComputer);
-          if (
-            event.type === "bot.spawned" ||
-            event.type === "bot.deleted" ||
-            event.type === "run.completed"
-          ) {
-            void refreshBots().catch(() => undefined);
-          }
-          if (event.type === "thread.message.created") {
-            const blocks = (event.payload.blocks as Array<{ kind?: string }>) ?? [];
-            if (blocks.some((block) => block.kind === "child_bot")) {
+      let cursor = snap?.cursor ?? -1;
+      let retryMs = 250;
+      while (!abort.signal.aborted) {
+        try {
+          const events = await rpc.threads.subscribe(
+            { botId: active.id, cursor },
+            { signal: abort.signal },
+          );
+          for await (const event of events) {
+            if (abort.signal.aborted) break;
+            cursor = Math.max(cursor, event.seq);
+            retryMs = 250;
+            applyThreadEvent(event, setSnapshot, setComputer);
+            if (event.type === "bot.archived") {
+              void refreshBots(true).catch(() => undefined);
+            } else if (
+              event.type === "bot.spawned" ||
+              event.type === "bot.deleted" ||
+              event.type === "run.completed"
+            ) {
               void refreshBots().catch(() => undefined);
             }
+            if (event.type === "thread.message.created") {
+              const blocks = (event.payload.blocks as Array<{ kind?: string }>) ?? [];
+              if (blocks.some((block) => block.kind === "child_bot")) {
+                void refreshBots().catch(() => undefined);
+              }
+              if (event.payload.role === "bot") markBotReadIfVisible(active.id);
+            }
+            if (event.type === "run.completed") {
+              void refreshThread(active.id).catch(() => undefined);
+            } else if (isComputerStatusEvent(event)) {
+              void refreshComputerScreen(active.id).catch(() => undefined);
+            }
           }
-          if (
-            event.type === "thread.message.created" ||
-            event.type === "run.completed" ||
-            event.type === "computer.status" ||
-            event.type === "computer.takeover.granted"
-          ) {
-            void refreshThread(active.id).catch(() => undefined);
-          }
+        } catch {
+          // The durable cursor below makes reconnects safe after a transient network failure.
         }
-      } catch {
-        if (!abort.signal.aborted) {
-          fallback = window.setInterval(
-            () => void refreshThread(active.id).catch(() => undefined),
-            2500,
-          );
-        }
+        if (abort.signal.aborted) break;
+        await refreshThread(active.id).catch(() => null);
+        await abortableDelay(retryMs, abort.signal);
+        retryMs = Math.min(retryMs * 2, 5_000);
       }
     })();
     return () => {
       abort.abort();
-      if (fallback !== undefined) window.clearInterval(fallback);
     };
-  }, [active?.id]);
+  }, [active?.id, markBotReadIfVisible]);
 
   const filtered = useMemo(
     () => bots.filter((b) => `${b.name} ${b.preview}`.toLowerCase().includes(query.toLowerCase())),
     [bots, query],
   );
+  const answerableAskMessageId = latestAnswerableAskMessageId(snapshot);
 
   async function send() {
     if (!active || !draft.trim()) return;
@@ -152,13 +300,19 @@ export function ShellPage() {
     await refreshThread(active.id);
   }
 
-  async function createBot(input: { name: string; title: string; description: string }) {
+  async function createBot(input: {
+    name: string;
+    title: string;
+    description: string;
+    computerMode: ComputerMode;
+  }) {
     const bot = await rpc.bots.create({
       name: input.name.trim(),
       title: input.title,
       description: input.description,
       instructions: input.description,
       notifyOnFinish: true,
+      computerMode: input.computerMode,
     });
     await refreshBots();
     navigate(`/app/${bot.id}`);
@@ -236,8 +390,8 @@ export function ShellPage() {
 
   async function releaseComputer() {
     if (!active) return;
-    await rpc.computer.release({ botId: active.id }).catch(() => undefined);
     setComputerOpen(false);
+    await rpc.computer.release({ botId: active.id }).catch(() => undefined);
     await refreshThread(active.id);
   }
 
@@ -281,6 +435,10 @@ export function ShellPage() {
               key={bot.id}
               type="button"
               onClick={() => navigate(`/app/${bot.id}`)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setBotMenu({ botId: bot.id, position: { x: event.clientX, y: event.clientY } });
+              }}
               className="flex gap-3 rounded-xl px-2.5 py-[11px] text-left"
               style={{
                 background: active?.id === bot.id ? "#161618" : "transparent",
@@ -289,17 +447,74 @@ export function ShellPage() {
               <BotAvatar color={bot.color} size={38} />
               <div className="min-w-0 flex-1">
                 <div className="flex items-baseline justify-between gap-2">
-                  <span className="text-[15px] font-medium text-[#ECECEE]">{bot.name}</span>
-                  <span className="shrink-0 text-[12.5px] text-[#6C6C70]">
+                  <span
+                    className={`text-[15px] text-[#ECECEE] ${
+                      bot.unread ? "font-semibold" : "font-medium"
+                    }`}
+                  >
+                    {bot.name}
+                    {bot.unread ? <span className="sr-only"> (unread)</span> : null}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1.5 text-[12.5px] text-[#6C6C70]">
                     {bot.status === "idle" ? "" : bot.status}
+                    {bot.unread ? (
+                      <span
+                        aria-hidden="true"
+                        className="inline-block h-2 w-2 rounded-full bg-[#8B5CF6]"
+                      />
+                    ) : null}
                   </span>
                 </div>
-                <div className="mt-0.5 truncate text-[13.5px] text-[#85858A]">
+                <div
+                  className={`mt-0.5 truncate text-[13.5px] ${
+                    bot.unread ? "font-medium text-[#C9C9CE]" : "text-[#85858A]"
+                  }`}
+                >
                   {bot.preview || bot.title}
                 </div>
               </div>
             </button>
           ))}
+          {archivedBots.length > 0 ? (
+            <div className="mt-2 border-t border-[#202023] pt-2">
+              <button
+                type="button"
+                aria-expanded={archivedOpen}
+                onClick={() => setArchivedOpen((open) => !open)}
+                className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-[13.5px] text-[#85858A] hover:bg-[#131315]"
+              >
+                <span>Archived</span>
+                <span>{archivedBots.length}</span>
+              </button>
+              {archivedOpen
+                ? archivedBots.map((bot) => (
+                    <div key={bot.id} className="flex items-center gap-2 rounded-lg px-2.5 py-2">
+                      <BotAvatar color={bot.color} size={28} />
+                      <span className="min-w-0 flex-1 truncate text-[14px] text-[#A8A8AD]">
+                        {bot.name}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void rpc.bots.restore({ botId: bot.id }).then(() => refreshBots(true))
+                        }
+                        className="text-[12.5px] text-[#C9C9CE] hover:text-white"
+                      >
+                        Restore
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Delete ${bot.name}`}
+                        onClick={() => setDeleteTarget(bot)}
+                        className="text-[12.5px] text-[#FF5364]"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  ))
+                : null}
+            </div>
+          ) : null}
         </div>
         <button
           type="button"
@@ -398,16 +613,36 @@ export function ShellPage() {
             </svg>
           </button>
         </div>
-        <div className="rk-scroll flex flex-1 flex-col gap-[13px] overflow-y-auto px-7 py-6">
+        <div
+          ref={messageScroll}
+          className="rk-scroll flex flex-1 flex-col gap-[13px] overflow-y-auto px-7 py-6"
+        >
+          {snapshot?.olderCursor != null ? (
+            <button
+              type="button"
+              disabled={loadingOlder}
+              onClick={() => void loadOlderMessages()}
+              className="self-center rounded-lg px-3 py-1.5 text-[13px] text-[#85858A] hover:bg-[#1A1A1D] hover:text-[#C9C9CE] disabled:opacity-50"
+            >
+              {loadingOlder ? "Loading…" : "Load earlier messages"}
+            </button>
+          ) : null}
           {(snapshot?.messages ?? []).map((message) => (
             <MessageView
               key={message.id}
               message={message}
+              canAnswer={message.id === answerableAskMessageId}
               onOpenBot={(id) => navigate(`/app/${id}`)}
-              onAnswer={(text) =>
-                active &&
-                rpc.threads.answer({ botId: active.id, runId: message.runId ?? "", answer: text })
-              }
+              onAnswer={async (text) => {
+                if (!active) return;
+                await rpc.threads.answer({
+                  botId: active.id,
+                  runId: message.runId ?? "",
+                  messageId: message.id,
+                  answer: text,
+                });
+                await refreshThread(active.id);
+              }}
             />
           ))}
           {snapshot?.run && ["running", "queued", "leased"].includes(snapshot.run.status) ? (
@@ -438,10 +673,14 @@ export function ShellPage() {
               placeholder={active ? `Message ${active.name}` : "Message…"}
               className="flex-1 bg-transparent text-[15.5px] text-[#E9E9EA] outline-none"
             />
-            {snapshot?.run && ["running", "queued", "leased"].includes(snapshot.run.status) ? (
+            {snapshot?.run && isActive(snapshot.run.status) ? (
               <button
                 type="button"
-                onClick={() => active && void rpc.threads.stop({ botId: active.id })}
+                aria-label="Stop"
+                onClick={() =>
+                  active &&
+                  void rpc.threads.stop({ botId: active.id }).then(() => refreshThread(active.id))
+                }
                 className="grid h-9 w-9 place-items-center rounded-full bg-[#F1F1EF] text-[#17171A]"
               >
                 ■
@@ -449,6 +688,7 @@ export function ShellPage() {
             ) : (
               <button
                 type="button"
+                aria-label="Send"
                 onClick={() => void send()}
                 className="grid h-9 w-9 place-items-center rounded-full bg-[#F1F1EF] text-[#17171A]"
               >
@@ -504,15 +744,11 @@ export function ShellPage() {
                     />
                   ) : (
                     <div className="grid h-full place-items-center text-sm text-[#6C6C70]">
-                      {computer?.state === "booting" || booting
-                        ? "Booting live desktop…"
-                        : computer?.state === "running"
-                          ? `${active.name}’s screen`
-                          : computer?.state === "suspended"
-                            ? "Computer is asleep — take control to wake it"
-                            : computer?.state === "error"
-                              ? "Computer failed to boot"
-                              : "Computer is stopped"}
+                      {computerPlaceholder(
+                        computer?.state,
+                        booting,
+                        computerLabel(computer?.mode, active.name),
+                      )}
                     </div>
                   )}
                   <button
@@ -524,11 +760,13 @@ export function ShellPage() {
                 </div>
                 <div className="mt-3 flex items-center justify-between">
                   <span className="text-[13.5px] text-[#85858A]">
-                    {computer?.controlHolder === "user"
-                      ? "You have control"
-                      : computer?.state === "suspended"
-                        ? "Asleep"
-                        : `${active.name}’s screen`}
+                    {computer?.busyBotName
+                      ? `${computer.busyBotName} is using it`
+                      : computer?.controlHolder === "user"
+                        ? "You have control"
+                        : computer?.state === "suspended"
+                          ? "Asleep"
+                          : computerLabel(computer?.mode, active.name)}
                   </span>
                   {computer?.controlHolder === "user" ? (
                     <Button
@@ -610,7 +848,13 @@ export function ShellPage() {
               <BotSettings
                 key={active.id}
                 bot={active}
-                onSave={async (patch) => {
+                onSave={async ({ computerMode, ...patch }) => {
+                  if (computerMode !== active.computerMode) {
+                    await rpc.bots.setComputer({
+                      botId: active.id,
+                      mode: computerMode,
+                    });
+                  }
                   await rpc.bots.update({ botId: active.id, ...patch });
                   await refreshBots();
                 }}
@@ -626,11 +870,12 @@ export function ShellPage() {
                   a.click();
                   URL.revokeObjectURL(url);
                 }}
-                onDelete={async () => {
-                  await rpc.bots.remove({ botId: active.id });
+                onArchive={async () => {
+                  await rpc.bots.archive({ botId: active.id });
                   setPanel(null);
-                  await refreshBots();
+                  await refreshBots(true);
                 }}
+                onDelete={() => setDeleteTarget(active)}
               />
             ) : null}
             {panel === "routine" ? (
@@ -697,6 +942,59 @@ export function ShellPage() {
         ) : null}
       </aside>
 
+      {contextBot && botMenu ? (
+        <BotContextMenu
+          bot={contextBot}
+          position={botMenu.position}
+          onClose={closeBotMenu}
+          onTogglePinned={() => {
+            setBotMenu(null);
+            void rpc.bots
+              .update({ botId: contextBot.id, pinned: !contextBot.pinned })
+              .then(() => refreshBots());
+          }}
+          onToggleUnread={() => {
+            const unread = !contextBot.unread;
+            setBotMenu(null);
+            const request = unread ? markBotUnread(contextBot.id) : markBotRead(contextBot.id);
+            void request.catch(() => undefined);
+          }}
+          onEdit={() => {
+            navigate(`/app/${contextBot.id}`);
+            setPanel("settings");
+            setBotMenu(null);
+          }}
+          onDuplicate={() => {
+            setBotMenu(null);
+            void rpc.bots.duplicate({ botId: contextBot.id }).then(async (bot) => {
+              await refreshBots();
+              navigate(`/app/${bot.id}`);
+            });
+          }}
+          onArchive={() => {
+            setBotMenu(null);
+            void rpc.bots.archive({ botId: contextBot.id }).then(() => refreshBots(true));
+          }}
+          onDelete={() => {
+            setDeleteTarget(contextBot);
+            setBotMenu(null);
+          }}
+        />
+      ) : null}
+
+      {deleteTarget ? (
+        <DeleteBotDialog
+          bot={deleteTarget}
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={async (deleteMemories) => {
+            await rpc.bots.remove({ botId: deleteTarget.id, deleteMemories });
+            setDeleteTarget(null);
+            setPanel(null);
+            await refreshBots(true);
+          }}
+        />
+      ) : null}
+
       {pluginsOpen ? <PluginsOverlay onClose={() => setPluginsOpen(false)} /> : null}
 
       {booting ? (
@@ -714,7 +1012,7 @@ export function ShellPage() {
             <div className="flex min-w-0 items-center gap-3">
               <BotAvatar color={active.color} size={28} />
               <span className="truncate text-[15.5px] font-medium text-[#ECECEE]">
-                {active.name}’s computer
+                {computerLabel(computer?.mode, active.name)}
               </span>
               {computer?.controlHolder === "user" ? (
                 <span className="rounded-full bg-[rgba(48,162,75,.14)] px-[11px] py-1 text-[13px] text-[#4ECB71]">
@@ -769,7 +1067,9 @@ export function ShellPage() {
               />
             ) : (
               <div className="grid h-full place-items-center text-sm text-[#6C6C70]">
-                {computer?.state === "suspended" ? "Computer is asleep" : `${active.name}’s screen`}
+                {computer?.state === "suspended"
+                  ? "Computer is asleep"
+                  : computerLabel(computer?.mode, active.name)}
               </div>
             )}
           </div>
@@ -784,102 +1084,41 @@ function applyThreadEvent(
   setSnapshot: Dispatch<SetStateAction<ThreadSnapshot | null>>,
   setComputer: Dispatch<SetStateAction<ComputerStatus | null>>,
 ) {
-  if (event.type === "thread.progress") {
-    const text = String(event.payload.text ?? "");
-    setSnapshot((prev) => {
-      if (!prev) return prev;
-      const streaming: ThreadMessage = {
-        id: `progress:${event.runId ?? event.id}`,
-        threadId: event.threadId,
-        seq: event.seq,
-        role: "bot",
-        blocks: [{ kind: "progress", text }],
-        runId: event.runId,
-        createdAt: event.createdAt,
-      };
-      const without = prev.messages.filter((message) => !message.id.startsWith("progress:"));
-      return { ...prev, cursor: event.seq, messages: [...without, streaming] };
-    });
-    return;
+  if (
+    event.type === "thread.progress" ||
+    event.type === "thread.subagent" ||
+    event.type === "thread.message.created" ||
+    event.type === "thread.message.updated" ||
+    event.type === "run.waiting_input"
+  ) {
+    setSnapshot((prev) => reduceThreadSnapshot(prev, event));
   }
-  if (event.type === "thread.subagent") {
-    const block = subagentBlockFromPayload(event.payload);
-    const next: ThreadMessage = {
-      id: `subagent:${block.agentId}`,
-      threadId: event.threadId,
-      seq: event.seq,
-      role: "bot",
-      blocks: [block],
-      runId: event.runId,
-      createdAt: event.createdAt,
-    };
-    setSnapshot((prev) => {
-      if (!prev) return prev;
-      const without = prev.messages.filter(
-        (message) => message.id !== next.id && !message.id.startsWith("progress:"),
-      );
-      const progress = prev.messages.filter((message) => message.id.startsWith("progress:"));
-      return { ...prev, cursor: event.seq, messages: [...without, next, ...progress] };
-    });
-    return;
-  }
-  if (event.type === "thread.message.created") {
-    const role = (event.payload.role as ThreadMessage["role"]) ?? "bot";
-    const blocks = (event.payload.blocks as ThreadMessage["blocks"]) ?? [];
-    const next: ThreadMessage = {
-      id: String(event.payload.messageId ?? event.id),
-      threadId: event.threadId,
-      seq: event.seq,
-      role,
-      blocks,
-      runId: event.runId,
-      createdAt: event.createdAt,
-    };
-    setSnapshot((prev) => {
-      if (!prev) return prev;
-      const without = prev.messages.filter(
-        (message) =>
-          message.id !== next.id &&
-          !message.id.startsWith("progress:") &&
-          !replacedSubagent(message, blocks),
-      );
-      return { ...prev, cursor: event.seq, messages: [...without, next] };
-    });
-  }
-  if (event.type === "computer.status" || event.type === "computer.takeover.granted") {
-    const status = String(event.payload.status ?? "");
-    setComputer((prev) =>
-      prev
-        ? {
-            ...prev,
-            controlHolder: event.type === "computer.takeover.granted" ? "user" : prev.controlHolder,
-            state:
-              event.type === "computer.status" &&
-              ["stopped", "booting", "running", "suspended", "error"].includes(status)
-                ? (status as ComputerStatus["state"])
-                : prev.state,
-            screenAvailable: status === "running" || status === "booting" || prev.screenAvailable,
-          }
-        : prev,
-    );
+  if (isComputerStatusEvent(event)) {
+    setComputer((prev) => reduceComputerStatus(prev, event));
   }
 }
 
-function replacedSubagent(message: ThreadMessage, blocks: ThreadMessage["blocks"]) {
-  const agentIds = new Set(
-    blocks.filter((block) => block.kind === "subagent").map((block) => block.agentId),
-  );
-  if (agentIds.size === 0) return false;
-  return message.blocks.some((block) => block.kind === "subagent" && agentIds.has(block.agentId));
+function latestAnswerableAskMessageId(snapshot: ThreadSnapshot | null): string | null {
+  if (snapshot?.run?.status !== "waiting_input") return null;
+  for (let index = snapshot.messages.length - 1; index >= 0; index -= 1) {
+    const message = snapshot.messages[index];
+    if (message?.runId !== snapshot.run.id) continue;
+    if (message.blocks.some((block) => block.kind === "ask" && block.status !== "answered")) {
+      return message.id;
+    }
+  }
+  return null;
 }
 
 function MessageView({
+  canAnswer,
   message,
   onAnswer,
   onOpenBot,
 }: {
+  canAnswer: boolean;
   message: ThreadMessage;
-  onAnswer: (text: string) => void;
+  onAnswer: (text: string) => Promise<void>;
   onOpenBot: (botId: string) => void;
 }) {
   return (
@@ -942,12 +1181,12 @@ function MessageView({
           );
         }
         if (block.kind === "child_bot") {
-          const deleted = block.status === "deleted";
+          const removed = block.status === "deleted" || block.status === "archived";
           return (
             <button
               key={i}
               type="button"
-              disabled={deleted}
+              disabled={removed}
               onClick={() => onOpenBot(block.botId)}
               className="w-[min(340px,90%)] rounded-[18px] border border-[#232326] bg-[#17171A] px-[18px] py-4 text-left disabled:opacity-60"
             >
@@ -956,16 +1195,22 @@ function MessageView({
                 <span
                   className="rounded-full px-[11px] py-1 text-[13px]"
                   style={{
-                    background: deleted ? "rgba(230,87,7,.14)" : "rgba(48,162,75,.14)",
-                    color: deleted ? "#E65707" : "#4ECB71",
+                    background: removed ? "rgba(230,87,7,.14)" : "rgba(48,162,75,.14)",
+                    color: removed ? "#E65707" : "#4ECB71",
                   }}
                 >
-                  {deleted ? "deleted" : "bot"}
+                  {block.status === "archived"
+                    ? "archived"
+                    : block.status === "deleted"
+                      ? "deleted"
+                      : "bot"}
                 </span>
               </div>
               <div className="mt-2 text-[14.5px] leading-[1.5] text-[#A8A8AD]">
-                {deleted
-                  ? "Removed this bot, including its chat, computer, and memory."
+                {removed
+                  ? block.status === "archived"
+                    ? "Archived this bot. Its chat, memory, and files are preserved."
+                    : "Removed this bot, including its chat, computer, and memory."
                   : block.title || "Opened its own thread. Tap to switch."}
               </div>
             </button>
@@ -1006,36 +1251,7 @@ function MessageView({
           );
         }
         if (block.kind === "ask") {
-          return (
-            <div
-              key={i}
-              className="max-w-[74%] rounded-[20px] border border-[#242428] bg-[#141417] px-5 py-[17px]"
-            >
-              <div className="text-[15.5px] leading-[1.5] text-[#ECECEE]">
-                <ChatMarkdown>{block.text}</ChatMarkdown>
-              </div>
-              {block.detail ? (
-                <pre className="mt-3 rounded-xl bg-[#0E0E10] px-3.5 py-3 font-mono text-[12.5px] leading-[1.7] text-[#85858A]">
-                  {block.detail}
-                </pre>
-              ) : null}
-              <div className="mt-3.5 flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => onAnswer("approved")}
-                  className="rounded-[11px] bg-[#F1F1EF] px-[17px] py-2 text-[14.5px] font-medium text-[#17171A]"
-                >
-                  Send it
-                </button>
-                <button
-                  type="button"
-                  className="rounded-[11px] border border-[#26262A] px-[17px] py-2 text-[14.5px] text-[#C9C9CE]"
-                >
-                  Edit first
-                </button>
-              </div>
-            </div>
-          );
+          return <AskCard key={i} block={block} canAnswer={canAnswer} onAnswer={onAnswer} />;
         }
         if (block.kind === "computer") {
           return (
@@ -1061,16 +1277,155 @@ function MessageView({
   );
 }
 
+type AskBlock = Extract<ThreadMessage["blocks"][number], { kind: "ask" }>;
+
+function AskCard({
+  block,
+  canAnswer,
+  onAnswer,
+}: {
+  block: AskBlock;
+  canAnswer: boolean;
+  onAnswer: (text: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [answer, setAnswer] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submitAnswer(value: string) {
+    const text = value.trim();
+    if (!text || submitting) return;
+    setSubmitting(true);
+    try {
+      await onAnswer(text);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="max-w-[74%] rounded-[20px] border border-[#242428] bg-[#141417] px-5 py-[17px]">
+      <div className="text-[15.5px] leading-[1.5] text-[#ECECEE]">
+        <ChatMarkdown>{block.text}</ChatMarkdown>
+      </div>
+      {block.detail ? (
+        <pre className="mt-3 rounded-xl bg-[#0E0E10] px-3.5 py-3 font-mono text-[12.5px] leading-[1.7] text-[#85858A]">
+          {block.detail}
+        </pre>
+      ) : null}
+      {block.status === "answered" ? (
+        <div className="mt-3.5 text-[13.5px] font-medium text-[#4ECB71]">
+          {block.answer ? `Answered: ${block.answer}` : "Answered"}
+        </div>
+      ) : !canAnswer ? (
+        <div className="mt-3.5 text-[13.5px] font-medium text-[#85858A]">No longer active</div>
+      ) : editing ? (
+        <form
+          className="mt-3.5 flex flex-col gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitAnswer(answer);
+          }}
+        >
+          <input
+            aria-label="Answer"
+            value={answer}
+            onChange={(event) => setAnswer(event.target.value)}
+            placeholder="Type your answer"
+            className="rounded-[11px] border border-[#303035] bg-[#0E0E10] px-3.5 py-2.5 text-[14.5px] text-[#ECECEE] outline-none focus:border-[#66666D]"
+          />
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={!answer.trim() || submitting}
+              className="rounded-[11px] bg-[#F1F1EF] px-[17px] py-2 text-[14.5px] font-medium text-[#17171A] disabled:opacity-50"
+            >
+              {submitting ? "Sending…" : "Send answer"}
+            </button>
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => {
+                setAnswer("");
+                setEditing(false);
+              }}
+              className="rounded-[11px] border border-[#26262A] px-[17px] py-2 text-[14.5px] text-[#C9C9CE] disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <div className="mt-3.5 flex gap-2">
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={() => void submitAnswer("approved")}
+            className="rounded-[11px] bg-[#F1F1EF] px-[17px] py-2 text-[14.5px] font-medium text-[#17171A] disabled:opacity-50"
+          >
+            {submitting ? "Sending…" : "Send it"}
+          </button>
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={() => setEditing(true)}
+            className="rounded-[11px] border border-[#26262A] px-[17px] py-2 text-[14.5px] text-[#C9C9CE] disabled:opacity-50"
+          >
+            Edit first
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ComputerModePicker({
+  value,
+  onChange,
+}: {
+  value: ComputerMode;
+  onChange: (value: ComputerMode) => void;
+}) {
+  return (
+    <div className="mt-4">
+      <div className="text-[14px] text-[#85858A]">Computer</div>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        {(["team", "dedicated"] as const).map((mode) => (
+          <button
+            key={mode}
+            type="button"
+            aria-pressed={value === mode}
+            onClick={() => onChange(mode)}
+            className={`rounded-[11px] border px-3.5 py-3 text-[14px] capitalize ${
+              value === mode
+                ? "border-[#6C6C70] bg-[#1A1A1D] text-[#ECECEE]"
+                : "border-[#26262A] text-[#85858A]"
+            }`}
+          >
+            {mode === "team" ? "Team" : "Private"}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function CreateBotForm({
   onCreate,
   onCancel,
 }: {
-  onCreate: (input: { name: string; title: string; description: string }) => void;
+  onCreate: (input: {
+    name: string;
+    title: string;
+    description: string;
+    computerMode: ComputerMode;
+  }) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [computerMode, setComputerMode] = useState<ComputerMode>("team");
 
   return (
     <div>
@@ -1108,10 +1463,11 @@ function CreateBotForm({
           className="mt-2 w-full rounded-[11px] border border-[#26262A] bg-transparent px-3.5 py-3 text-[#ECECEE]"
         />
       </label>
+      <ComputerModePicker value={computerMode} onChange={setComputerMode} />
       <button
         type="button"
         disabled={!name.trim()}
-        onClick={() => onCreate({ name, title, description })}
+        onClick={() => onCreate({ name, title, description, computerMode })}
         className="mt-5 rounded-[11px] bg-[#F1F1EF] px-4 py-2 text-[#17171A] disabled:opacity-40"
       >
         Create
@@ -1124,6 +1480,7 @@ function BotSettings({
   bot,
   onSave,
   onExport,
+  onArchive,
   onDelete,
 }: {
   bot: Bot;
@@ -1132,15 +1489,18 @@ function BotSettings({
     title?: string;
     description?: string;
     instructions?: string;
+    computerMode: ComputerMode;
   }) => Promise<void>;
   onExport: () => Promise<void>;
-  onDelete: () => Promise<void>;
+  onArchive: () => Promise<void>;
+  onDelete: () => void;
 }) {
   const [name, setName] = useState(bot.name);
   const [title, setTitle] = useState(bot.title);
   const [description, setDescription] = useState(bot.description);
-  const [confirming, setConfirming] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [computerMode, setComputerMode] = useState(bot.computerMode);
+  const [saving, setSaving] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   return (
@@ -1173,11 +1533,26 @@ function BotSettings({
           className="mt-2 w-full rounded-[11px] border border-[#26262A] bg-transparent px-3.5 py-3 text-[#ECECEE]"
         />
       </label>
+      <ComputerModePicker value={computerMode} onChange={setComputerMode} />
+      {error ? <p className="mt-2 text-[13px] text-[#E65707]">{error}</p> : null}
       <div className="mt-5 flex flex-col items-start gap-3">
         <button
           type="button"
-          onClick={() => void onSave({ name, title, description, instructions: description })}
-          className="rounded-[11px] bg-[#F1F1EF] px-4 py-2 text-[#17171A]"
+          disabled={saving}
+          onClick={() => {
+            setSaving(true);
+            setError(null);
+            void onSave({
+              name,
+              title,
+              description,
+              instructions: description,
+              computerMode,
+            })
+              .catch((err) => setError(err instanceof Error ? err.message : "Could not save"))
+              .finally(() => setSaving(false));
+          }}
+          className="rounded-[11px] bg-[#F1F1EF] px-4 py-2 text-[#17171A] disabled:opacity-40"
         >
           Save
         </button>
@@ -1188,51 +1563,129 @@ function BotSettings({
         >
           Export
         </button>
-        {confirming ? (
-          <div className="w-full rounded-[11px] border border-[#3A1F14] bg-[#1A100C] px-3.5 py-3">
-            <p className="text-[13.5px] leading-[1.45] text-[#C9C9CE]">
-              This permanently deletes {bot.name}, including thread, computer, memory, and routines.
-              Bots it created stay in your list.
-            </p>
-            <div className="mt-3 flex items-center gap-3">
-              <button
-                type="button"
-                disabled={deleting}
-                onClick={() => {
-                  setConfirming(false);
-                  setError(null);
-                }}
-                className="text-[14px] text-[#85858A] disabled:opacity-40"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={deleting}
-                onClick={() => {
-                  setDeleting(true);
-                  setError(null);
-                  void onDelete().catch((err: unknown) => {
-                    setError(err instanceof Error ? err.message : "Could not delete bot");
-                    setDeleting(false);
-                  });
-                }}
-                className="rounded-[11px] bg-[#E65707] px-3.5 py-1.5 text-[14px] text-[#F1F1EF] disabled:opacity-40"
-              >
-                {deleting ? "Deleting…" : "Delete"}
-              </button>
-            </div>
-            {error ? <p className="mt-2 text-[13px] text-[#E65707]">{error}</p> : null}
-          </div>
-        ) : (
+        <button
+          type="button"
+          disabled={archiving}
+          onClick={() => {
+            setArchiving(true);
+            setError(null);
+            void onArchive()
+              .catch((err) => setError(err instanceof Error ? err.message : "Could not archive"))
+              .finally(() => setArchiving(false));
+          }}
+          className="text-[14px] text-[#85858A] disabled:opacity-40"
+        >
+          {archiving ? "Archiving…" : "Archive bot"}
+        </button>
+        <button type="button" onClick={onDelete} className="text-[14px] text-[#E65707]">
+          Delete bot…
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DeleteBotDialog({
+  bot,
+  onCancel,
+  onConfirm,
+}: {
+  bot: Bot;
+  onCancel: () => void;
+  onConfirm: (deleteMemories: boolean) => Promise<void>;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  const [deleteMemories, setDeleteMemories] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !deleting) onCancel();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [deleting, onCancel]);
+
+  return (
+    <div
+      role="presentation"
+      className="absolute inset-0 z-50 grid place-items-center bg-[rgba(4,4,5,.76)] px-5"
+      onPointerDown={() => {
+        if (!deleting) onCancel();
+      }}
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="delete-bot-title"
+        aria-describedby="delete-bot-description"
+        className="w-full max-w-[420px] rounded-[18px] border border-[#343438] bg-[#1A1A1D] p-5 shadow-[0_24px_70px_rgba(0,0,0,.65)]"
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <h2 id="delete-bot-title" className="text-[17px] font-medium text-[#F1F1F2]">
+          Delete {bot.name}?
+        </h2>
+        <p id="delete-bot-description" className="mt-2 text-[14px] leading-6 text-[#9A9AA0]">
+          Its conversation, files, and routines will be permanently deleted. Bots it created stay in
+          your list.
+        </p>
+        <fieldset className="mt-4 space-y-2">
+          <legend className="mb-2 text-[13.5px] text-[#C9C9CE]">What about its memories?</legend>
+          <label className="flex cursor-pointer gap-3 rounded-[11px] border border-[#343438] p-3">
+            <input
+              type="radio"
+              name="delete-memory"
+              checked={!deleteMemories}
+              onChange={() => setDeleteMemories(false)}
+            />
+            <span>
+              <span className="block text-[14px] text-[#ECECEE]">Keep memories</span>
+              <span className="mt-0.5 block text-[12.5px] text-[#85858A]">
+                Move them to your shared memory.
+              </span>
+            </span>
+          </label>
+          <label className="flex cursor-pointer gap-3 rounded-[11px] border border-[#343438] p-3">
+            <input
+              type="radio"
+              name="delete-memory"
+              checked={deleteMemories}
+              onChange={() => setDeleteMemories(true)}
+            />
+            <span>
+              <span className="block text-[14px] text-[#ECECEE]">Delete memories too</span>
+              <span className="mt-0.5 block text-[12.5px] text-[#85858A]">
+                This cannot be undone.
+              </span>
+            </span>
+          </label>
+        </fieldset>
+        {error ? <p className="mt-3 text-[13.5px] text-[#FF5364]">{error}</p> : null}
+        <div className="mt-5 flex justify-end gap-2.5">
           <button
             type="button"
-            onClick={() => setConfirming(true)}
-            className="text-[14px] text-[#E65707]"
+            disabled={deleting}
+            onClick={onCancel}
+            className="rounded-[10px] px-3.5 py-2 text-[14px] text-[#C9C9CE] hover:bg-[#29292D] disabled:opacity-40"
           >
-            Delete bot
+            Cancel
           </button>
-        )}
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={() => {
+              setDeleting(true);
+              setError(null);
+              void onConfirm(deleteMemories).catch((err: unknown) => {
+                setError(err instanceof Error ? err.message : "Could not delete bot");
+                setDeleting(false);
+              });
+            }}
+            className="rounded-[10px] bg-[#FF5364] px-3.5 py-2 text-[14px] font-medium text-white disabled:opacity-40"
+          >
+            {deleting ? "Deleting…" : "Delete"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1263,4 +1716,20 @@ function screenIframeSandbox(url: string | null) {
   } catch {
     return undefined;
   }
+}
+
+function computerPlaceholder(
+  state: ComputerStatus["state"] | undefined,
+  booting: boolean,
+  label: string,
+) {
+  if (state === "booting" || booting) return "Booting live desktop…";
+  if (state === "running") return label;
+  if (state === "suspended") return "Computer is asleep — take control to wake it";
+  if (state === "error") return "Computer failed to boot";
+  return "Computer is stopped";
+}
+
+function computerLabel(mode: ComputerStatus["mode"] | undefined, botName: string) {
+  return mode === "dedicated" ? `${botName}’s computer` : "Team Computer";
 }

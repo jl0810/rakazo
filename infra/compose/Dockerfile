@@ -26,10 +26,7 @@ RUN pnpm --filter @rakazo/db generate
 # ─────────────────────────────────────────────────────────────────────────────
 FROM deps AS builder
 
-ENV BETTER_AUTH_SECRET=3b9f04db62f81dd223d3f23eee073321572d64d9f0876d77b29c3e4b03f1e8fe
-ENV ENCRYPTION_KEY=39fe16bb1f45837f8484e0039237c3e16bbbafe034b184cca9ae383cf7146f4e
-
-RUN pnpm --filter @rakazo/web build
+RUN RAKAZO_ALLOW_DEV_SECRETS=1 pnpm --filter @rakazo/web build
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STAGE 3 — runner: slim production image (~200MB base vs ~1.1GB full bookworm)
@@ -52,6 +49,7 @@ COPY --from=builder /app/pnpm-lock.yaml \
                     /app/turbo.json \
                     /app/tsconfig.base.json ./
 
+RUN install -d -m 750 -o node -g node /data /app/apps/web/node_modules/.vite-temp
 ENV NODE_ENV=production
 
 EXPOSE 3100 5173 7091

@@ -1,75 +1,169 @@
 import { ChatMarkdown } from "@rakazo/chat-ui/native";
-import { Link, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { abortableDelay } from "@rakazo/core";
+import { Link, useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from "expo-router";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Alert, AppState, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { NativeSymbol } from "../components/native-symbol";
 import {
   applyMobileThreadEvent,
   blockText,
   type MobileMessage,
+  type MobileMessagePage,
   type MobileSnapshot,
+  mergeMobileSnapshot,
+  prependMobileMessagePage,
   rpc,
   subscribeThread,
 } from "../lib/api";
+import { confirmDeleteBot } from "../lib/bot-lifecycle";
 
 export default function Thread() {
   const navigation = useNavigation();
   const router = useRouter();
   const { botId, name } = useLocalSearchParams<{ botId?: string; name?: string }>();
   const scroll = useRef<ScrollView>(null);
+  const loadingOlderContent = useRef(false);
+  const expandedHistoryThread = useRef<string | null>(null);
   const [snap, setSnap] = useState<MobileSnapshot | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
 
   useLayoutEffect(() => {
-    navigation.setOptions({ title: name || "Thread" });
-  }, [name, navigation]);
+    navigation.setOptions({
+      title: name || "Thread",
+      headerRight: () => (
+        <Pressable accessibilityLabel="Bot actions" hitSlop={8} onPress={showBotActions}>
+          <NativeSymbol ios="ellipsis" android="ellipsis-horizontal" size={21} color="#ECECEE" />
+        </Pressable>
+      ),
+    });
+  }, [botId, name, navigation]);
+
+  function leaveBot() {
+    router.dismissAll();
+    router.replace("/");
+  }
+
+  function showBotActions() {
+    if (!botId) return;
+    const bot = { id: botId, name: name || "Bot" };
+    Alert.alert(bot.name, "Archive keeps everything and can be undone. Delete is permanent.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Archive",
+        onPress: () =>
+          void rpc("bots/archive", { botId })
+            .then(leaveBot)
+            .catch((error) =>
+              Alert.alert(
+                "Could not archive bot",
+                error instanceof Error ? error.message : "Try again.",
+              ),
+            ),
+      },
+      { text: "Delete…", style: "destructive", onPress: () => confirmDeleteBot(bot, leaveBot) },
+    ]);
+  }
 
   async function refresh() {
     if (!botId) return;
     const next = await rpc<MobileSnapshot>("threads/get", { botId });
-    setSnap(next);
+    setSnap((prev) =>
+      mergeMobileSnapshot(prev, next, expandedHistoryThread.current === next.threadId),
+    );
     return next;
   }
 
+  async function loadOlderMessages() {
+    if (!botId || snap?.olderCursor == null || loadingOlder) return;
+    loadingOlderContent.current = true;
+    setLoadingOlder(true);
+    try {
+      const page = await rpc<MobileMessagePage>("threads/messages", {
+        botId,
+        before: snap.olderCursor,
+      });
+      expandedHistoryThread.current = page.threadId;
+      setSnap((prev) => prependMobileMessagePage(prev, page));
+    } catch (err) {
+      loadingOlderContent.current = false;
+      setError(err instanceof Error ? err.message : "Could not load earlier messages");
+    } finally {
+      setLoadingOlder(false);
+    }
+  }
+
+  const markReadIfVisible = useCallback(() => {
+    if (!botId || AppState.currentState !== "active" || !navigation.isFocused()) return;
+    void rpc("threads/markRead", { botId }).catch(() => undefined);
+  }, [botId, navigation]);
+
+  // Covers returning from a pushed screen; the AppState listener covers returning from background.
+  useFocusEffect(
+    useCallback(() => {
+      markReadIfVisible();
+    }, [markReadIfVisible]),
+  );
+
+  useEffect(() => {
+    const appState = AppState.addEventListener("change", (state) => {
+      if (state === "active") markReadIfVisible();
+    });
+    return () => appState.remove();
+  }, [markReadIfVisible]);
+
   useEffect(() => {
     if (!botId) return;
+    expandedHistoryThread.current = null;
     const abort = new AbortController();
-    let fallback: ReturnType<typeof setInterval> | undefined;
     void (async () => {
       const next = await refresh().catch((err: Error) => {
         setError(err.message);
         return null;
       });
       if (abort.signal.aborted) return;
-      fallback = setInterval(() => void refresh().catch(() => undefined), 2500);
-      try {
-        await subscribeThread(
-          botId,
-          next?.cursor ?? -1,
-          (event) => {
-            if (
-              event.type === "thread.progress" ||
-              event.type === "thread.message.created" ||
-              event.type === "thread.subagent"
-            ) {
-              setSnap((prev) => applyMobileThreadEvent(prev, event));
-            }
-            if (event.type === "thread.message.created" || event.type === "run.completed") {
-              void refresh().catch(() => undefined);
-            }
-          },
-          abort.signal,
-        );
-      } catch {
-        // Keep polling; live subscribe is best-effort on device.
+      let cursor = next?.cursor ?? -1;
+      let retryMs = 250;
+      while (!abort.signal.aborted) {
+        try {
+          await subscribeThread(
+            botId,
+            cursor,
+            (event) => {
+              cursor = Math.max(cursor, event.seq ?? -1);
+              retryMs = 250;
+              if (
+                event.type === "thread.progress" ||
+                event.type === "thread.message.created" ||
+                event.type === "thread.message.updated" ||
+                event.type === "thread.subagent" ||
+                event.type === "run.waiting_input"
+              ) {
+                setSnap((prev) => applyMobileThreadEvent(prev, event));
+              }
+              if (event.type === "thread.message.created" && event.payload?.role === "bot") {
+                markReadIfVisible();
+              }
+              if (event.type === "run.completed") {
+                void refresh().catch(() => undefined);
+              }
+            },
+            abort.signal,
+          );
+        } catch {
+          // A full refresh reconciles visible state; the event cursor still resumes without gaps.
+        }
+        if (abort.signal.aborted) break;
+        await refresh().catch(() => undefined);
+        await abortableDelay(retryMs, abort.signal);
+        retryMs = Math.min(retryMs * 2, 5_000);
       }
     })();
     return () => {
       abort.abort();
-      if (fallback) clearInterval(fallback);
     };
-  }, [botId]);
+  }, [botId, markReadIfVisible]);
 
   async function send() {
     if (!botId || !draft.trim()) return;
@@ -85,8 +179,26 @@ export default function Thread() {
       <ScrollView
         ref={scroll}
         style={{ flex: 1, marginTop: 8 }}
-        onContentSizeChange={() => scroll.current?.scrollToEnd({ animated: false })}
+        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+        onContentSizeChange={() => {
+          if (loadingOlderContent.current) {
+            loadingOlderContent.current = false;
+            return;
+          }
+          scroll.current?.scrollToEnd({ animated: false });
+        }}
       >
+        {snap?.olderCursor != null ? (
+          <Pressable
+            disabled={loadingOlder}
+            onPress={() => void loadOlderMessages()}
+            style={{ alignSelf: "center", paddingHorizontal: 12, paddingVertical: 10 }}
+          >
+            <Text style={{ color: "#85858A", fontSize: 13 }}>
+              {loadingOlder ? "Loading…" : "Load earlier messages"}
+            </Text>
+          </Pressable>
+        ) : null}
         {(snap?.messages ?? []).map((message) => (
           <View
             key={message.id}
@@ -199,10 +311,10 @@ function MessageBubble({
     );
   }
   if (special?.kind === "child_bot") {
-    const deleted = special.status === "deleted";
+    const removed = special.status === "deleted" || special.status === "archived";
     return (
       <Pressable
-        disabled={deleted}
+        disabled={removed}
         onPress={() => onOpenBot(special.botId ?? "", special.name ?? "Bot")}
         style={{
           width: "90%",
@@ -212,20 +324,26 @@ function MessageBubble({
           backgroundColor: "#17171A",
           paddingHorizontal: 16,
           paddingVertical: 14,
-          opacity: deleted ? 0.6 : 1,
+          opacity: removed ? 0.6 : 1,
         }}
       >
         <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
           <Text style={{ color: "#ECECEE", fontSize: 15, fontWeight: "600" }}>
             {special.name || "Bot"}
           </Text>
-          <Text style={{ color: deleted ? "#E65707" : "#4ECB71", fontSize: 13 }}>
-            {deleted ? "deleted" : "bot"}
+          <Text style={{ color: removed ? "#E65707" : "#4ECB71", fontSize: 13 }}>
+            {special.status === "archived"
+              ? "archived"
+              : special.status === "deleted"
+                ? "deleted"
+                : "bot"}
           </Text>
         </View>
         <Text style={{ color: "#A8A8AD", marginTop: 8, fontSize: 14.5, lineHeight: 21 }}>
-          {deleted
-            ? "Removed this bot, including its chat, computer, and memory."
+          {removed
+            ? special.status === "archived"
+              ? "Archived this bot. Its chat, memory, and files are preserved."
+              : "Removed this bot, including its chat, computer, and memory."
             : special.title || "Opened its own thread. Tap to switch."}
         </Text>
       </Pressable>

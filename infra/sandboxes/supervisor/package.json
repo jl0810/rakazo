@@ -7,14 +7,14 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "check": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --root ../../.. infra/sandboxes/supervisor/src"
   },
   "dependencies": {
     "@hono/node-server": "^1.19.1",
     "@rakazo/core": "workspace:*",
     "dockerode": "^4.0.7",
     "hono": "^4.9.6",
-    "pino": "^9.9.0",
+    "tsx": "^4.20.5",
     "zod": "^4.1.5"
   },
   "devDependencies": {
