@@ -53,11 +53,9 @@ RUN pnpm --filter @rakazo/db generate
 # ─────────────────────────────────────────────────────────────────────────────
 FROM deps AS builder
 
-# Build-time env vars required by vite config (secrets guard)
-ENV BETTER_AUTH_SECRET=3b9f04db62f81dd223d3f23eee073321572d64d9f0876d77b29c3e4b03f1e8fe
-ENV ENCRYPTION_KEY=39fe16bb1f45837f8484e0039237c3e16bbbafe034b184cca9ae383cf7146f4e
-
-RUN pnpm --filter @rakazo/web build
+# RAKAZO_ALLOW_DEV_SECRETS satisfies the vite secrets guard at build time
+# without baking real secrets into the image or the repo.
+RUN RAKAZO_ALLOW_DEV_SECRETS=1 pnpm --filter @rakazo/web build
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STAGE 4 — runner: slim production image
@@ -77,9 +75,11 @@ COPY --from=tools /opt/dokploy-mcp /opt/dokploy-mcp
 ENV PATH="/root/.local/bin:$PATH"
 RUN ln -sf /root/.local/bin/devin /usr/local/bin/devin
 
-# Devin MCP config
+# Devin MCP config template — rendered with real credentials at container
+# start by infra/dokploy/render-mcp-config.mjs (see compose command)
 RUN mkdir -p /root/.config/devin
-COPY infra/dokploy/mcp_config.json /root/.config/devin/mcp_config.json
+COPY infra/dokploy/mcp_config.template.json /root/.config/devin/mcp_config.template.json
+COPY infra/dokploy/render-mcp-config.mjs /app/infra/dokploy/render-mcp-config.mjs
 
 # Enable pnpm (needed to run `pnpm --filter ... start`)
 RUN corepack enable

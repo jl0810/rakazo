@@ -3,22 +3,27 @@ services:
     build:
       context: ../..
       dockerfile: infra/dokploy/Dockerfile
-    command: ["bash", "-lc", "pnpm --filter @rakazo/db exec prisma migrate deploy && pnpm --filter @rakazo/api start"]
+    command: ["bash", "-lc", "node /app/infra/dokploy/render-mcp-config.mjs && pnpm --filter @rakazo/db exec prisma migrate deploy && pnpm --filter @rakazo/api start"]
     environment:
-      - DATABASE_URL=postgres://postgres:REDACTED_OLD_POSTGRES_PASSWORD@100.81.25.91:5432/rakazo
+      - DATABASE_URL=${DATABASE_URL}
       - DATA_DIR=/data
       - WAKEUP_DRIVER=graphile
       - AGENT_RUNTIME=devin-cli
       - SANDBOX_PROVIDER=fake
       - DEVIN_CLI_PATH=/usr/local/bin/devin
       - DEVIN_MODEL=glm-5-2
-      - BETTER_AUTH_SECRET=3b9f04db62f81dd223d3f23eee073321572d64d9f0876d77b29c3e4b03f1e8fe
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
       - BETTER_AUTH_URL=${BETTER_AUTH_URL}
       - API_URL=${API_URL}
       - WEB_ORIGIN=${WEB_ORIGIN}
       - SIGNUPS_ENABLED=true
-      - ENCRYPTION_KEY=39fe16bb1f45837f8484e0039237c3e16bbbafe034b184cca9ae383cf7146f4e
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - DOKPLOY_API_KEY=${DOKPLOY_API_KEY}
+      - DOKPLOY_URL=${DOKPLOY_URL}
+      - POSTGRES_MCP_URL_MAIN=${POSTGRES_MCP_URL_MAIN}
+      - POSTGRES_MCP_URL_TRADE=${POSTGRES_MCP_URL_TRADE}
+      - POSTGRES_MCP_URL_ETF=${POSTGRES_MCP_URL_ETF}
       - NODE_ENV=production
     volumes:
       - rakazo-data:/data
@@ -42,18 +47,23 @@ services:
     build:
       context: ../..
       dockerfile: infra/dokploy/Dockerfile
-    command: ["pnpm", "--filter", "@rakazo/worker", "start"]
+    command: ["bash", "-lc", "node /app/infra/dokploy/render-mcp-config.mjs && pnpm --filter @rakazo/worker start"]
     environment:
-      - DATABASE_URL=postgres://postgres:REDACTED_OLD_POSTGRES_PASSWORD@100.81.25.91:5432/rakazo
+      - DATABASE_URL=${DATABASE_URL}
       - DATA_DIR=/data
       - WAKEUP_DRIVER=graphile
       - AGENT_RUNTIME=devin-cli
       - SANDBOX_PROVIDER=fake
       - DEVIN_CLI_PATH=/usr/local/bin/devin
       - DEVIN_MODEL=glm-5-2
-      - BETTER_AUTH_SECRET=3b9f04db62f81dd223d3f23eee073321572d64d9f0876d77b29c3e4b03f1e8fe
-      - ENCRYPTION_KEY=39fe16bb1f45837f8484e0039237c3e16bbbafe034b184cca9ae383cf7146f4e
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - DOKPLOY_API_KEY=${DOKPLOY_API_KEY}
+      - DOKPLOY_URL=${DOKPLOY_URL}
+      - POSTGRES_MCP_URL_MAIN=${POSTGRES_MCP_URL_MAIN}
+      - POSTGRES_MCP_URL_TRADE=${POSTGRES_MCP_URL_TRADE}
+      - POSTGRES_MCP_URL_ETF=${POSTGRES_MCP_URL_ETF}
       - NODE_ENV=production
     volumes:
       - rakazo-data:/data
@@ -68,7 +78,7 @@ services:
     command: ["pnpm", "--filter", "@rakazo/web", "preview", "--host", "0.0.0.0", "--port", "5173"]
     environment:
       - API_PROXY_TARGET=http://api:3100
-      - BETTER_AUTH_SECRET=3b9f04db62f81dd223d3f23eee073321572d64d9f0876d77b29c3e4b03f1e8fe
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
       - NODE_ENV=production
     ports:
       - "5173:5173"

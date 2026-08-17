@@ -4,8 +4,8 @@
       "command": "/usr/local/bin/node",
       "args": ["/opt/dokploy-mcp/build/index.js"],
       "env": {
-        "DOKPLOY_API_KEY": "CSeAXrkJutMwAhrDVWINvmtSmUAoVkgBpjwmWHUUPQbAVuEuHOHQqkJOwWngRKue",
-        "DOKPLOY_URL": "http://100.81.25.91:3000/api"
+        "DOKPLOY_API_KEY": "${DOKPLOY_API_KEY}",
+        "DOKPLOY_URL": "${DOKPLOY_URL}"
       },
       "disabledTools": [
         "project-create",
@@ -68,7 +68,7 @@
         "3.13",
         "postgres-mcp",
         "--access-mode=unrestricted",
-        "postgresql://postgres:REDACTED_OLD_POSTGRES_PASSWORD@100.81.25.91:5432/postgres?sslmode=disable"
+        "${POSTGRES_MCP_URL_MAIN}"
       ]
     },
     "postgres-trade": {
@@ -78,7 +78,7 @@
         "3.13",
         "postgres-mcp",
         "--access-mode=unrestricted",
-        "postgresql://aeroedge_app:REDACTED_OLD_AEROEDGE_PASSWORD@100.81.25.91:5434/aeroedge?sslmode=disable"
+        "${POSTGRES_MCP_URL_TRADE}"
       ]
     },
     "postgres-etf": {
@@ -88,7 +88,7 @@
         "3.13",
         "postgres-mcp",
         "--access-mode=unrestricted",
-        "postgresql://rotation_research:REDACTED_OLD_ROTATION_RESEARCH_PASSWORD@100.81.25.91:5432/rotation_etf?sslmode=disable"
+        "${POSTGRES_MCP_URL_ETF}"
       ]
     },
     "rakazo-connectors": {
