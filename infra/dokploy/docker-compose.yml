@@ -47,6 +47,7 @@ services:
       SIGNUPS_ENABLED: "true"
       ENCRYPTION_KEY: "${ENCRYPTION_KEY}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
+      COMPOSIO_API_KEY: "${COMPOSIO_API_KEY}"
     volumes:
       - ../../data:/data
       - devin-config:/root/.config/devin
@@ -73,6 +74,7 @@ services:
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
       ENCRYPTION_KEY: "${ENCRYPTION_KEY}"
       OPENROUTER_API_KEY: "${OPENROUTER_API_KEY}"
+      COMPOSIO_API_KEY: "${COMPOSIO_API_KEY}"
     volumes:
       - ../../data:/data
       - devin-config:/root/.config/devin
