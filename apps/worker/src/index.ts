@@ -10,6 +10,8 @@ import {
   createPostgresReconciliationLeadership,
   createRunExecutor,
   createRunSandbox,
+  DevinAcpRuntime,
+  DevinAgentRuntime,
   EncryptedSecretStore,
   ExpoPushProvider,
   GraphileJobPublisher,
@@ -17,9 +19,7 @@ import {
   InMemoryJobQueue,
   isComposioEnabled,
   LocalAgentHomeStore,
-  DevinAgentRuntime,
-  DevinAcpRuntime,
-  DevinCliRuntime,
+  LocalArtifactStore,
   PiAgentRuntime,
   PostgresRealtimeFanout,
   ScriptedAgentRuntime,
@@ -41,7 +41,10 @@ async function main() {
     process.env.AGENT_RUNTIME === "scripted"
       ? new ScriptedAgentRuntime()
       : process.env.AGENT_RUNTIME === "devin"
-        ? new DevinAgentRuntime({ apiKey: process.env.DEVIN_API_KEY!, orgId: process.env.DEVIN_ORG_ID! })
+        ? new DevinAgentRuntime({
+            apiKey: process.env.DEVIN_API_KEY!,
+            orgId: process.env.DEVIN_ORG_ID!,
+          })
         : process.env.AGENT_RUNTIME === "devin-cli"
           ? new DevinAcpRuntime()
           : new PiAgentRuntime();
@@ -52,6 +55,8 @@ async function main() {
     daytonaApiKey: process.env.DAYTONA_API_KEY,
     daytonaApiUrl: process.env.DAYTONA_API_URL,
     daytonaTarget: process.env.DAYTONA_TARGET,
+    boxApiKey: process.env.BOX_API_KEY,
+    boxApiUrl: process.env.BOX_API_URL ?? process.env.BOX_BASE_URL,
     dataDir,
     prisma,
   });
@@ -60,6 +65,7 @@ async function main() {
   await connector.start();
   const secrets = new EncryptedSecretStore(resolveEncryptionKey(process.env));
   const home = new LocalAgentHomeStore(dataDir);
+  const artifacts = new LocalArtifactStore(dataDir);
   const inMemoryJobs = process.env.WAKEUP_DRIVER === "memory" ? new InMemoryJobQueue() : undefined;
   const jobs: JobPublisher = inMemoryJobs ?? new GraphileJobPublisher(databaseUrl);
   const jobHost: JobWorkerHost = inMemoryJobs ?? new GraphileJobWorkerHost(databaseUrl);
@@ -69,7 +75,9 @@ async function main() {
     sandbox,
     memory: new MarkdownMemoryStore(prisma),
     home,
+    artifacts,
     connector: stack.connector,
+    listConnectedPluginSlugs: stack.composio?.listConnectedSlugs.bind(stack.composio),
     secrets: [process.env.OPENROUTER_API_KEY ?? "", process.env.COMPOSIO_API_KEY ?? ""].filter(
       Boolean,
     ),
@@ -89,6 +97,8 @@ async function main() {
     jobs,
     events,
     workerId: process.pid.toString(),
+    runtime,
+    deploymentModelKey: process.env.OPENROUTER_API_KEY,
   });
   await jobHost.start(jobHandlers);
   const reconciler = createJobReconciler({

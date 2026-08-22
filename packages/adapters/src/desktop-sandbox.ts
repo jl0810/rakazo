@@ -47,6 +47,7 @@ export class DesktopSandboxProvider implements SandboxProvider {
         snapshots: true,
         takeover: false,
         persistentHome: true,
+        multiScreen: false,
       },
     };
   }
@@ -84,6 +85,8 @@ export class DesktopSandboxProvider implements SandboxProvider {
     });
     return ref;
   }
+
+  async prepare(_computer: ComputerRef, _context: AdapterContext): Promise<void> {}
 
   async *execute(
     computer: ComputerRef,

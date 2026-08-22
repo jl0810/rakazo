@@ -50,8 +50,9 @@ COPY --from=builder /app/pnpm-lock.yaml \
                     /app/tsconfig.base.json ./
 
 RUN install -d -m 750 -o node -g node /data /app/apps/web/node_modules/.vite-temp
+ARG GIT_SHA
 ENV NODE_ENV=production
-
+ENV GIT_SHA=$GIT_SHA
 EXPOSE 3100 5173 7091
 
 # Default: run API. docker-compose overrides CMD per service.

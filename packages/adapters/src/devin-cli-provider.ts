@@ -1,6 +1,4 @@
 import { spawn } from "node:child_process";
-import { createProvider } from "@earendil-works/pi-ai";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type {
   AssistantMessage,
   AssistantMessageEvent,
@@ -8,6 +6,7 @@ import type {
   Model,
   SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, createProvider } from "@earendil-works/pi-ai";
 
 const DEFAULT_CLI_PATH =
   "/Applications/Devin.app/Contents/Resources/app/extensions/windsurf/devin/bin/devin";
@@ -43,13 +42,16 @@ function buildCliPrompt(context: Context): string {
 
   for (const msg of context.messages) {
     if (msg.role === "user") {
-      const text = typeof msg.content === "string" ? msg.content : msg.content.map((b) => b.type === "text" ? b.text : "").join("");
+      const text =
+        typeof msg.content === "string"
+          ? msg.content
+          : msg.content.map((b) => (b.type === "text" ? b.text : "")).join("");
       parts.push(`User: ${text}`);
     } else if (msg.role === "assistant") {
-      const text = msg.content.map((b) => b.type === "text" ? b.text : "").join("");
+      const text = msg.content.map((b) => (b.type === "text" ? b.text : "")).join("");
       if (text) parts.push(`Assistant: ${text}`);
     } else if (msg.role === "toolResult") {
-      const text = msg.content.map((b) => b.type === "text" ? b.text : "").join("");
+      const text = msg.content.map((b) => (b.type === "text" ? b.text : "")).join("");
       parts.push(`Tool result (${msg.toolName}): ${text}`);
     }
   }
@@ -64,15 +66,7 @@ function runDevinCli(
   signal: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; exitCode: number; aborted: boolean }> {
   return new Promise((resolve) => {
-    const args = [
-      "-p",
-      "--model",
-      modelId,
-      "--respect-workspace-trust",
-      "false",
-      "--",
-      prompt,
-    ];
+    const args = ["-p", "--model", modelId, "--respect-workspace-trust", "false", "--", prompt];
 
     const child = spawn(cliPath, args, {
       env: { ...process.env },
@@ -131,7 +125,11 @@ function stripCliStatusLines(text: string): string {
 function makeStream(
   model: Model<string>,
   cliPath: string,
-): (m: Model<string>, ctx: Context, options?: SimpleStreamOptions) => ReturnType<typeof createAssistantMessageEventStream> {
+): (
+  m: Model<string>,
+  ctx: Context,
+  options?: SimpleStreamOptions,
+) => ReturnType<typeof createAssistantMessageEventStream> {
   return (_model, ctx, options) => {
     const stream = createAssistantMessageEventStream();
     const signal = options?.signal ?? new AbortController().signal;

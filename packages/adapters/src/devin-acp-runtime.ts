@@ -1,9 +1,9 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
-import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   AdapterContext,
   AgentRunRequest,
@@ -69,10 +69,7 @@ export class DevinAcpRuntime implements AgentRuntime {
     running.get(runId)?.abort();
   }
 
-  async *run(
-    request: AgentRunRequest,
-    context: AdapterContext,
-  ): AsyncIterable<AgentRuntimeEvent> {
+  async *run(request: AgentRunRequest, context: AdapterContext): AsyncIterable<AgentRuntimeEvent> {
     const controller = new AbortController();
     running.set(request.runId, controller);
     const signal = context.signal ?? controller.signal;
@@ -91,10 +88,17 @@ export class DevinAcpRuntime implements AgentRuntime {
         // 2. Write per-session MCP config file and update Devin's MCP config (before spawning CLI)
         sessionFilePath = `/tmp/rakazo-mcp-session-${request.runId}.json`;
         if (request.tools.length > 0) {
-          writeFileSync(sessionFilePath, JSON.stringify({
-            tools: request.tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
-            executorUrl: `http://127.0.0.1:${toolExecutor.port}/execute`,
-          }));
+          writeFileSync(
+            sessionFilePath,
+            JSON.stringify({
+              tools: request.tools.map((t) => ({
+                name: t.name,
+                description: t.description,
+                inputSchema: t.inputSchema,
+              })),
+              executorUrl: `http://127.0.0.1:${toolExecutor.port}/execute`,
+            }),
+          );
           ensureMcpConfig(sessionFilePath);
         }
 
@@ -120,7 +124,13 @@ export class DevinAcpRuntime implements AgentRuntime {
         rpc.onUpdate((update) => {
           const su = update.params.update as Record<string, unknown>;
           const kind = su.sessionUpdate as string;
-          try { writeFileSync(`/tmp/devin-onupdate-${request.runId}.log`, `${Date.now()} onUpdate: kind=${kind}\n`, { flag: "a" }); } catch {}
+          try {
+            writeFileSync(
+              `/tmp/devin-onupdate-${request.runId}.log`,
+              `${Date.now()} onUpdate: kind=${kind}\n`,
+              { flag: "a" },
+            );
+          } catch {}
 
           if (kind === "agent_message_chunk") {
             const content = su.content as { type: string; text: string };
@@ -130,8 +140,12 @@ export class DevinAcpRuntime implements AgentRuntime {
             const text = content?.map((c) => c.text).join("") ?? "";
             if (text) queue.push({ type: "text", text });
           } else if (kind === "agent_thought" || kind === "agent_thought_chunk") {
-            const content = su.content as { type: string; text: string } | Array<{ type: string; text: string }>;
-            const text = Array.isArray(content) ? content.map((c) => c.text).join("") : content?.text ?? "";
+            const content = su.content as
+              | { type: string; text: string }
+              | Array<{ type: string; text: string }>;
+            const text = Array.isArray(content)
+              ? content.map((c) => c.text).join("")
+              : (content?.text ?? "");
             if (text) queue.push({ type: "progress", text });
           } else if (kind === "tool_call_update") {
             const status = su.status as string;
@@ -141,7 +155,10 @@ export class DevinAcpRuntime implements AgentRuntime {
               queue.push({ type: "progress", text: `${title}…` });
             }
             if (status === "completed") {
-              const content = su.content as Array<{ type: string; content: { type: string; text: string } }>;
+              const content = su.content as Array<{
+                type: string;
+                content: { type: string; text: string };
+              }>;
               const resultText = content?.map((c) => c.content?.text).join("") ?? "";
               queue.push({
                 type: "tool",
@@ -152,7 +169,9 @@ export class DevinAcpRuntime implements AgentRuntime {
             }
           } else if (kind === "usage_update") {
             const used = su.used as number;
-            const meta = su._meta as { "cognition.ai/inputTokens"?: number; "cognition.ai/outputTokens"?: number } | undefined;
+            const meta = su._meta as
+              | { "cognition.ai/inputTokens"?: number; "cognition.ai/outputTokens"?: number }
+              | undefined;
             queue.push({
               type: "usage",
               inputTokens: meta?.["cognition.ai/inputTokens"] ?? 0,
@@ -186,10 +205,10 @@ export class DevinAcpRuntime implements AgentRuntime {
         // workspace is the bot's own files, not the Rakazo repo or the user's Mac home.
         const botHomeDir = resolve(process.env.DATA_DIR ?? "./data", "homes", request.botId);
         mkdirSync(botHomeDir, { recursive: true });
-        const sessionResult = await rpc.request("session/new", {
+        const sessionResult = (await rpc.request("session/new", {
           cwd: botHomeDir,
           mcpServers: [],
-        }) as { sessionId?: string } | null;
+        })) as { sessionId?: string } | null;
 
         if (!sessionResult?.sessionId) {
           queue.push({ type: "text", text: "Failed to create Devin ACP session" });
@@ -213,10 +232,10 @@ export class DevinAcpRuntime implements AgentRuntime {
         queue.push({ type: "progress", text: `Devin ACP (${this.model}) working…` });
 
         // 7. Send prompt and wait for completion
-        const promptResult = await rpc.request("session/prompt", {
+        const promptResult = (await rpc.request("session/prompt", {
           sessionId: rpc.sessionId,
           prompt: [{ type: "text", text: prompt }],
-        }) as { stopReason?: string } | null;
+        })) as { stopReason?: string } | null;
 
         signal.removeEventListener("abort", onAbort);
 
@@ -235,7 +254,11 @@ export class DevinAcpRuntime implements AgentRuntime {
       } finally {
         proc?.kill("SIGTERM");
         toolExecutor?.close();
-        if (sessionFilePath) { try { unlinkSync(sessionFilePath); } catch {} }
+        if (sessionFilePath) {
+          try {
+            unlinkSync(sessionFilePath);
+          } catch {}
+        }
         queue.close();
       }
     })();
@@ -258,7 +281,10 @@ export class DevinAcpRuntime implements AgentRuntime {
 class AcpClient {
   private proc: ChildProcess;
   private nextId = 1;
-  private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  private pending = new Map<
+    number,
+    { resolve: (v: unknown) => void; reject: (e: Error) => void }
+  >();
   private updateHandler: ((notification: JsonRpcNotification) => void) | null = null;
   private idleResolve: (() => void) | null = null;
   private buffer = "";
@@ -288,7 +314,11 @@ class AcpClient {
       try {
         const msg = JSON.parse(trimmed);
         try {
-          writeFileSync(`/tmp/devin-acp-messages-${this.runId}.jsonl`, JSON.stringify({ receivedAt: Date.now(), ...msg }) + "\n", { flag: "a" });
+          writeFileSync(
+            `/tmp/devin-acp-messages-${this.runId}.jsonl`,
+            JSON.stringify({ receivedAt: Date.now(), ...msg }) + "\n",
+            { flag: "a" },
+          );
         } catch {}
         this.handleMessage(msg);
       } catch {
@@ -300,12 +330,22 @@ class AcpClient {
   private handleMessage(msg: Record<string, unknown>) {
     const hasMethod = typeof msg.method === "string";
     const hasId = msg.id !== undefined && msg.id !== null;
-    try { writeFileSync(`/tmp/devin-handle-${this.runId}.log`, `${Date.now()} handle: method=${msg.method ?? 'none'} hasMethod=${hasMethod} hasId=${hasId} updateHandler=${!!this.updateHandler}\n`, { flag: "a" }); } catch {}
+    try {
+      writeFileSync(
+        `/tmp/devin-handle-${this.runId}.log`,
+        `${Date.now()} handle: method=${msg.method ?? "none"} hasMethod=${hasMethod} hasId=${hasId} updateHandler=${!!this.updateHandler}\n`,
+        { flag: "a" },
+      );
+    } catch {}
 
     if (hasMethod && hasId) {
       // Server is sending us a request
       if (msg.method === "session/request_permission") {
-        const params = msg.params as { sessionId?: string; toolCall?: { toolCallId?: string }; options?: Array<{ optionId: string }> };
+        const params = msg.params as {
+          sessionId?: string;
+          toolCall?: { toolCallId?: string };
+          options?: Array<{ optionId: string }>;
+        };
         const allowAlways = params.options?.find((o) => o.optionId === "allow_server_always");
         const allowSession = params.options?.find((o) => o.optionId === "allow_server_session");
         const selected = allowAlways ?? allowSession ?? params.options?.[0];
@@ -338,7 +378,13 @@ class AcpClient {
         }
       }
     } else if (hasMethod && msg.method === "session/update") {
-      try { writeFileSync(`/tmp/devin-update-call-${this.runId}.log`, `${Date.now()} calling updateHandler: handler=${!!this.updateHandler}\n`, { flag: "a" }); } catch {}
+      try {
+        writeFileSync(
+          `/tmp/devin-update-call-${this.runId}.log`,
+          `${Date.now()} calling updateHandler: handler=${!!this.updateHandler}\n`,
+          { flag: "a" },
+        );
+      } catch {}
       this.updateHandler?.(msg as JsonRpcNotification);
     }
   }
@@ -353,7 +399,17 @@ class AcpClient {
       const id = this.nextId++;
       const req: JsonRpcRequest = { jsonrpc: "2.0", id, method, params };
       try {
-        writeFileSync(`/tmp/devin-acp-messages-${this.runId}.jsonl`, JSON.stringify({ sentAt: Date.now(), direction: "out", method, id, paramsPreview: JSON.stringify(params).slice(0, 2000) }) + "\n", { flag: "a" });
+        writeFileSync(
+          `/tmp/devin-acp-messages-${this.runId}.jsonl`,
+          JSON.stringify({
+            sentAt: Date.now(),
+            direction: "out",
+            method,
+            id,
+            paramsPreview: JSON.stringify(params).slice(0, 2000),
+          }) + "\n",
+          { flag: "a" },
+        );
       } catch {}
       this.pending.set(id, { resolve, reject });
       this.proc.stdin?.write(JSON.stringify(req) + "\n");
@@ -409,7 +465,7 @@ function buildAcpPrompt(request: AgentRunRequest): string {
   if (request.history.length > 0) {
     const historyText = request.history
       .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((msg) => msg.role === "assistant" ? `Assistant: ${msg.content}` : msg.content)
+      .map((msg) => (msg.role === "assistant" ? `Assistant: ${msg.content}` : msg.content))
       .join("\n\n");
     if (historyText) parts.push(historyText);
   }
@@ -459,7 +515,9 @@ function startToolExecutor(request: AgentRunRequest): Promise<{ port: number; cl
       return;
     }
     let body = "";
-    req.on("data", (chunk) => { body += chunk; });
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
     req.on("end", async () => {
       try {
         const { name, args } = JSON.parse(body) as { name: string; args: Record<string, unknown> };
@@ -498,27 +556,57 @@ function createQueue(runId: string) {
   return {
     push(item: QueueItem) {
       items.push(item);
-      try { writeFileSync(`/tmp/devin-queue-${runId}.log`, `${Date.now()} push: type=${item.type} items=${items.length} wake=${!!wake}\n`, { flag: "a" }); } catch {}
+      try {
+        writeFileSync(
+          `/tmp/devin-queue-${runId}.log`,
+          `${Date.now()} push: type=${item.type} items=${items.length} wake=${!!wake}\n`,
+          { flag: "a" },
+        );
+      } catch {}
       wake?.();
     },
     close() {
       closed = true;
-      try { writeFileSync(`/tmp/devin-queue-${runId}.log`, `${Date.now()} close: items=${items.length}\n`, { flag: "a" }); } catch {}
+      try {
+        writeFileSync(
+          `/tmp/devin-queue-${runId}.log`,
+          `${Date.now()} close: items=${items.length}\n`,
+          { flag: "a" },
+        );
+      } catch {}
       wake?.();
     },
     async *iterate(): AsyncGenerator<AgentRuntimeEvent> {
       while (!closed || items.length) {
         if (items.length) {
           const item = items.shift()!;
-          try { writeFileSync(`/tmp/devin-queue-${runId}.log`, `${Date.now()} yield: type=${item.type} remaining=${items.length}\n`, { flag: "a" }); } catch {}
+          try {
+            writeFileSync(
+              `/tmp/devin-queue-${runId}.log`,
+              `${Date.now()} yield: type=${item.type} remaining=${items.length}\n`,
+              { flag: "a" },
+            );
+          } catch {}
           yield item;
           continue;
         }
-        try { writeFileSync(`/tmp/devin-queue-${runId}.log`, `${Date.now()} waiting: closed=${closed}\n`, { flag: "a" }); } catch {}
+        try {
+          writeFileSync(
+            `/tmp/devin-queue-${runId}.log`,
+            `${Date.now()} waiting: closed=${closed}\n`,
+            { flag: "a" },
+          );
+        } catch {}
         await new Promise<void>((resolve) => {
           wake = resolve;
         });
-        try { writeFileSync(`/tmp/devin-queue-${runId}.log`, `${Date.now()} woken: items=${items.length} closed=${closed}\n`, { flag: "a" }); } catch {}
+        try {
+          writeFileSync(
+            `/tmp/devin-queue-${runId}.log`,
+            `${Date.now()} woken: items=${items.length} closed=${closed}\n`,
+            { flag: "a" },
+          );
+        } catch {}
       }
     },
   };

@@ -36,7 +36,7 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=dokploy-network"
-      - "traefik.http.routers.rakazo-api-rpc.rule=Host(`rakazo.raydoug.com`) && (PathPrefix(`/api`) || PathPrefix(`/rpc`))"
+      - "traefik.http.routers.rakazo-api-rpc.rule=Host(`${RAKAZO_HOST:-app.example.com}`) && (PathPrefix(`/api`) || PathPrefix(`/rpc`))"
       - "traefik.http.routers.rakazo-api-rpc.entrypoints=websecure"
       - "traefik.http.routers.rakazo-api-rpc.tls.certresolver=letsencrypt"
       - "traefik.http.routers.rakazo-api-rpc.priority=100"
@@ -79,6 +79,7 @@ services:
     environment:
       - API_PROXY_TARGET=http://api:3100
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
+      - RAKAZO_HOST=${RAKAZO_HOST:-app.example.com}
       - NODE_ENV=production
     ports:
       - "5173:5173"

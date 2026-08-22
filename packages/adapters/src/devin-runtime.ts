@@ -51,10 +51,7 @@ export class DevinAgentRuntime implements AgentRuntime {
     running.get(runId)?.abort();
   }
 
-  async *run(
-    request: AgentRunRequest,
-    context: AdapterContext,
-  ): AsyncIterable<AgentRuntimeEvent> {
+  async *run(request: AgentRunRequest, context: AdapterContext): AsyncIterable<AgentRuntimeEvent> {
     const controller = new AbortController();
     running.set(request.runId, controller);
     const signal = context.signal ?? controller.signal;
@@ -142,10 +139,7 @@ export class DevinAgentRuntime implements AgentRuntime {
     }
   }
 
-  private async createSession(
-    prompt: string,
-    signal: AbortSignal,
-  ): Promise<DevinSessionResponse> {
+  private async createSession(prompt: string, signal: AbortSignal): Promise<DevinSessionResponse> {
     const res = await fetch(`${DEVIN_BASE_URL}/organizations/${this.orgId}/sessions`, {
       method: "POST",
       headers: {
@@ -166,13 +160,10 @@ export class DevinAgentRuntime implements AgentRuntime {
     sessionId: string,
     signal: AbortSignal,
   ): Promise<DevinSessionResponse> {
-    const res = await fetch(
-      `${DEVIN_BASE_URL}/organizations/${this.orgId}/sessions/${sessionId}`,
-      {
-        headers: { Authorization: `Bearer ${this.apiKey}` },
-        signal,
-      },
-    );
+    const res = await fetch(`${DEVIN_BASE_URL}/organizations/${this.orgId}/sessions/${sessionId}`, {
+      headers: { Authorization: `Bearer ${this.apiKey}` },
+      signal,
+    });
     if (!res.ok) {
       const body = await res.text().catch(() => "unknown");
       throw new Error(`Devin get session failed (${res.status}): ${body}`);
@@ -180,10 +171,7 @@ export class DevinAgentRuntime implements AgentRuntime {
     return (await res.json()) as DevinSessionResponse;
   }
 
-  private async getMessages(
-    sessionId: string,
-    signal: AbortSignal,
-  ): Promise<DevinMessage[]> {
+  private async getMessages(sessionId: string, signal: AbortSignal): Promise<DevinMessage[]> {
     const res = await fetch(
       `${DEVIN_BASE_URL}/organizations/${this.orgId}/sessions/${sessionId}/messages`,
       {
@@ -207,9 +195,7 @@ function buildPrompt(request: AgentRunRequest): string {
   }
 
   if (request.history.length > 0) {
-    const historyText = request.history
-      .map((msg) => `[${msg.role}]: ${msg.content}`)
-      .join("\n\n");
+    const historyText = request.history.map((msg) => `[${msg.role}]: ${msg.content}`).join("\n\n");
     parts.push(`## Previous context\n${historyText}`);
   }
 

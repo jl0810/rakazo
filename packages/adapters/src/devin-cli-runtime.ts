@@ -36,10 +36,7 @@ export class DevinCliRuntime implements AgentRuntime {
     running.get(runId)?.abort();
   }
 
-  async *run(
-    request: AgentRunRequest,
-    context: AdapterContext,
-  ): AsyncIterable<AgentRuntimeEvent> {
+  async *run(request: AgentRunRequest, context: AdapterContext): AsyncIterable<AgentRuntimeEvent> {
     const controller = new AbortController();
     running.set(request.runId, controller);
     const signal = context.signal ?? controller.signal;
@@ -185,16 +182,14 @@ function buildPrompt(request: AgentRunRequest): string {
   }
 
   if (request.tools.length > 0) {
-    const toolText = request.tools
-      .map((t) => `- **${t.name}**: ${t.description}`)
-      .join("\n");
-    parts.push(`## Available tools\nYou have access to these tools. Use shell commands to interact with external services when possible.\n${toolText}`);
+    const toolText = request.tools.map((t) => `- **${t.name}**: ${t.description}`).join("\n");
+    parts.push(
+      `## Available tools\nYou have access to these tools. Use shell commands to interact with external services when possible.\n${toolText}`,
+    );
   }
 
   if (request.history.length > 0) {
-    const historyText = request.history
-      .map((msg) => `[${msg.role}]: ${msg.content}`)
-      .join("\n\n");
+    const historyText = request.history.map((msg) => `[${msg.role}]: ${msg.content}`).join("\n\n");
     parts.push(`## Previous context\n${historyText}`);
   }
 
@@ -208,7 +203,7 @@ type QueueItem = AgentRuntimeEvent | { type: "__close__" };
 function createQueue() {
   const items: QueueItem[] = [];
   let done = false;
-  let waiters: Array<() => void> = [];
+  const waiters: Array<() => void> = [];
 
   return {
     push(item: AgentRuntimeEvent) {

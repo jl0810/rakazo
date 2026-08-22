@@ -35,10 +35,17 @@ import type {
   ScreenSession,
   SecretRecord,
   SnapshotRef,
+  SpeechClip,
+  VoiceCapabilities,
+  VoiceInfo,
+  VoiceSynthesizeRequest,
+  VoiceTranscribeRequest,
+  VoiceVerifyResult,
 } from "./types.js";
 
 export interface SandboxProvider {
   describe(): AdapterDescriptor<SandboxCapabilities>;
+  /** Allocate or reconnect the computer, returning its reference before fallible setup. */
   provision(
     request: {
       botId: string;
@@ -48,6 +55,8 @@ export interface SandboxProvider {
     },
     context: AdapterContext,
   ): Promise<ComputerRef>;
+  /** Perform idempotent provider setup after the lifecycle has captured the reference. */
+  prepare(computer: ComputerRef, context: AdapterContext): Promise<void>;
   execute(
     computer: ComputerRef,
     request: CommandRequest,
@@ -96,6 +105,8 @@ export interface SandboxProvider {
   ): Promise<void>;
   snapshot(computer: ComputerRef, context: AdapterContext): Promise<SnapshotRef>;
   keepAlive?(computer: ComputerRef): Promise<void>;
+  /** Drop a single-screen graphical claim for this bot so another Team bot can use the display. */
+  releaseScreen?(computer: ComputerRef, context: AdapterContext): Promise<void>;
   stop(computer: ComputerRef, context: AdapterContext): Promise<void>;
   destroy(computer: ComputerRef, context: AdapterContext): Promise<void>;
 }
@@ -205,4 +216,12 @@ export interface NotificationProvider {
 export interface ExecutionRunner {
   describe(): AdapterDescriptor<{ cloud: boolean; selfHosted: boolean; desktop: boolean }>;
   dispatch(runId: string, target: "cloud" | "self-hosted" | "desktop"): Promise<void>;
+}
+
+export interface VoiceProvider {
+  describe(): AdapterDescriptor<VoiceCapabilities>;
+  verify(apiKey: string, context: AdapterContext): Promise<VoiceVerifyResult>;
+  listVoices(apiKey: string, context: AdapterContext): Promise<VoiceInfo[]>;
+  synthesize(request: VoiceSynthesizeRequest, context: AdapterContext): Promise<SpeechClip>;
+  transcribe?(request: VoiceTranscribeRequest, context: AdapterContext): Promise<{ text: string }>;
 }

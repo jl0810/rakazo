@@ -1,8 +1,12 @@
 import { eventIterator, oc } from "@orpc/contract";
 import * as z from "zod";
+import { ATTACHMENT_MAX_BASE64_LENGTH, ATTACHMENT_MAX_COUNT } from "./attachments.js";
 import {
+  AppBootstrapSchema,
   ArtifactSchema,
+  ArtifactWithContentSchema,
   BotSchema,
+  BotSectionSchema,
   CapabilityInstallSchema,
   ComputerModeSchema,
   ComputerStatusSchema,
@@ -14,21 +18,31 @@ import {
   ExportManifestSchema,
   MemoryDocumentSchema,
   MeSchema,
+  ModelCatalogEntrySchema,
   ModelCredentialSchema,
   RoutineSchema,
+  SkillPlaybookSchema,
+  TaughtSkillSchema,
+  TeachRecordingEventSchema,
   ThreadMessagePageSchema,
   ThreadSnapshotSchema,
   UpdateBotInput,
   UsageRecordSchema,
+  VoiceCatalogEntrySchema,
+  VoiceCredentialSchema,
+  VoiceInfoSchema,
+  VoiceStatusSchema,
 } from "./domain.js";
 import { ProductEventSchema } from "./events.js";
 import { Id } from "./ids.js";
+import { SearchQueryOutputSchema } from "./search.js";
 
 const botId = z.object({ botId: Id });
 
 export const appContract = {
   health: oc.output(z.object({ ok: z.literal(true), version: z.string() })),
   me: oc.output(MeSchema),
+  bootstrap: oc.input(z.object({ botId: Id.optional() })).output(AppBootstrapSchema),
   deployment: {
     get: oc.output(DeploymentSettingsSchema),
     update: oc
@@ -42,21 +56,7 @@ export const appContract = {
       .output(DeploymentSettingsSchema),
   },
   models: {
-    list: oc.output(
-      z.array(
-        z.object({
-          provider: z.string(),
-          providerName: z.string().optional(),
-          id: z.string(),
-          label: z.string(),
-          billing: z.string(),
-          auth: z.enum(["api-key", "oauth", "both"]).optional(),
-          oauthLabel: z.string().optional(),
-          subscription: z.boolean().optional(),
-          signIn: z.enum(["device-code"]).optional(),
-        }),
-      ),
-    ),
+    list: oc.output(z.array(ModelCatalogEntrySchema)),
     credentials: oc.output(z.array(ModelCredentialSchema)),
     connect: oc
       .input(
@@ -89,10 +89,14 @@ export const appContract = {
       .output(
         z.discriminatedUnion("status", [
           z.object({ status: z.literal("pending") }),
-          z.object({ status: z.literal("connected"), credential: ModelCredentialSchema }),
+          z.object({ status: z.literal("ready") }),
           z.object({ status: z.literal("error"), error: z.string() }),
         ]),
       ),
+    finishOAuth: oc.input(z.object({ loginId: z.string() })).output(ModelCredentialSchema),
+    cancelOAuth: oc
+      .input(z.object({ loginId: z.string() }))
+      .output(z.object({ ok: z.literal(true) })),
     setDefault: oc
       .input(z.object({ provider: z.string(), modelId: z.string() }))
       .output(z.object({ ok: z.literal(true) })),
@@ -111,24 +115,55 @@ export const appContract = {
       .input(z.object({ botId: Id, deleteMemories: z.boolean().default(false) }))
       .output(z.object({ ok: z.literal(true) })),
   },
+  botSections: {
+    list: oc.output(z.array(BotSectionSchema)),
+    create: oc
+      .input(z.object({ botId: Id, name: z.string().trim().min(1).max(60) }))
+      .output(BotSectionSchema),
+  },
   threads: {
     get: oc.input(z.object({ botId: Id })).output(ThreadSnapshotSchema),
     messages: oc
-      .input(z.object({ botId: Id, before: z.number().int().nonnegative() }))
+      .input(
+        z.object({
+          botId: Id,
+          before: z.number().int().nonnegative().optional(),
+          around: z
+            .object({
+              messageId: Id.optional(),
+              seq: z.number().int().nonnegative().optional(),
+            })
+            .optional(),
+        }),
+      )
       .output(ThreadMessagePageSchema),
     subscribe: oc
       .input(z.object({ botId: Id, cursor: z.number().int().min(-1) }))
       .output(eventIterator(ProductEventSchema)),
     send: oc
       .input(
-        z.object({
-          botId: Id,
-          text: z.string().min(1),
-          clientNonce: z.string().optional(),
-        }),
+        z
+          .object({
+            botId: Id,
+            text: z.string().optional(),
+            artifactIds: z.array(Id).max(ATTACHMENT_MAX_COUNT).optional(),
+            clientNonce: z.string().optional(),
+          })
+          .superRefine((input, ctx) => {
+            const text = input.text?.trim() ?? "";
+            const artifactIds = input.artifactIds ?? [];
+            if (!text && artifactIds.length === 0) {
+              ctx.addIssue({
+                code: "custom",
+                message: "Provide text or at least one attachment",
+                path: ["text"],
+              });
+            }
+          }),
       )
       .output(z.object({ taskId: Id, runId: Id, seq: z.number().int() })),
     stop: oc.input(botId).output(z.object({ ok: z.literal(true) })),
+    clear: oc.input(botId).output(z.object({ ok: z.literal(true) })),
     followUp: oc
       .input(z.object({ botId: Id, text: z.string().min(1) }))
       .output(z.object({ ok: z.literal(true) })),
@@ -148,7 +183,7 @@ export const appContract = {
       .input(
         z.object({
           botId: Id,
-          kind: z.enum(["key", "pointer", "clipboard"]),
+          kind: z.enum(["key", "pointer", "clipboard", "scroll"]),
           payload: z.record(z.string(), z.unknown()),
         }),
       )
@@ -192,6 +227,34 @@ export const appContract = {
     remove: oc.input(z.object({ routineId: Id })).output(z.object({ ok: z.literal(true) })),
     testRun: oc.input(z.object({ routineId: Id })).output(z.object({ runId: Id })),
   },
+  skills: {
+    list: oc.input(botId).output(z.array(TaughtSkillSchema)),
+    get: oc.input(z.object({ skillId: Id })).output(TaughtSkillSchema),
+    start: oc
+      .input(z.object({ botId: Id, goal: z.string().min(1).max(4000) }))
+      .output(TaughtSkillSchema),
+    appendEvent: oc
+      .input(z.object({ skillId: Id, event: TeachRecordingEventSchema }))
+      .output(TaughtSkillSchema),
+    snapshot: oc.input(z.object({ skillId: Id })).output(TaughtSkillSchema),
+    stop: oc.input(z.object({ skillId: Id })).output(TaughtSkillSchema),
+    updateDraft: oc
+      .input(
+        z.object({
+          skillId: Id,
+          name: z.string().optional(),
+          playbook: SkillPlaybookSchema,
+        }),
+      )
+      .output(TaughtSkillSchema),
+    save: oc
+      .input(z.object({ skillId: Id, name: z.string().optional() }))
+      .output(TaughtSkillSchema),
+    testRun: oc
+      .input(z.object({ skillId: Id, prompt: z.string().optional() }))
+      .output(z.object({ runId: Id })),
+    remove: oc.input(z.object({ skillId: Id })).output(z.object({ ok: z.literal(true) })),
+  },
   capabilities: {
     list: oc.output(z.array(CapabilityInstallSchema)),
     install: oc
@@ -221,6 +284,17 @@ export const appContract = {
   },
   artifacts: {
     list: oc.input(botId).output(z.array(ArtifactSchema)),
+    create: oc
+      .input(
+        z.object({
+          botId: Id,
+          name: z.string().min(1).max(255),
+          mimeType: z.string().min(1),
+          contentBase64: z.string().min(1).max(ATTACHMENT_MAX_BASE64_LENGTH),
+        }),
+      )
+      .output(ArtifactSchema),
+    get: oc.input(z.object({ botId: Id, artifactId: Id })).output(ArtifactWithContentSchema),
   },
   usage: {
     list: oc.output(z.array(UsageRecordSchema)),
@@ -239,6 +313,38 @@ export const appContract = {
     registerPush: oc
       .input(z.object({ token: z.string().min(8).max(512) }))
       .output(z.object({ ok: z.literal(true) })),
+  },
+  search: {
+    query: oc.input(z.object({ q: z.string().max(200) })).output(SearchQueryOutputSchema),
+  },
+  voice: {
+    catalog: oc.output(z.array(VoiceCatalogEntrySchema)),
+    status: oc.output(VoiceStatusSchema),
+    credentials: oc.output(z.array(VoiceCredentialSchema)),
+    connect: oc
+      .input(
+        z.object({
+          provider: z.string(),
+          apiKey: z.string().min(8),
+          voiceId: z.string().max(120).optional(),
+        }),
+      )
+      .output(VoiceCredentialSchema),
+    setVoice: oc
+      .input(z.object({ voiceId: z.string().min(1).max(120), provider: z.string().optional() }))
+      .output(VoiceStatusSchema),
+    voices: oc
+      .input(z.object({ provider: z.string().optional() }))
+      .output(z.array(VoiceInfoSchema)),
+    prepare: oc
+      .input(
+        z.object({
+          text: z.string().max(20000),
+          voiceId: z.string().max(120).optional(),
+          botId: Id.optional(),
+        }),
+      )
+      .output(z.object({ ready: z.boolean(), utterances: z.array(z.string()) })),
   },
 };
 
