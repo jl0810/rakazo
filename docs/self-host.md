@@ -47,6 +47,12 @@ BOX_API_KEY=              # when SANDBOX_PROVIDER=box
 
 Do not commit `.env`. Never put `COMPOSIO_API_KEY`, OpenRouter keys, or provider tokens in git, logs, or chat.
 
+`AGENT_RUNTIME=pi` uses Rakazo's native provider/tool loop. `AGENT_RUNTIME=devin-cli` keeps Devin as
+the deployment default when no model credential is selected, but it is still provider-aware:
+configured OpenAI, Anthropic, OpenRouter, and other Pi providers run through the native loop. Only
+Devin requests use the internal MCP bridge required by Devin ACP. In both cases Rakazo—not the model
+provider—owns the computer, tools, bots, routines, memory, taught skills, and connected plugins.
+
 ## Choosing a computer provider
 
 The Electron desktop app is a client of the same API. Docker and E2B still apply. On first launch, Electron asks the deployment owner whether bots should keep using Docker or run on this Mac as you. `SANDBOX_PROVIDER=desktop` is a separate, explicit provider that always runs commands on the service host.

@@ -16,6 +16,7 @@ import {
   renewComputerExecutionLease,
   screenLeaseIdForRun,
 } from "./computer-lifecycle.js";
+import { LocalAgentHomeStore } from "./home.js";
 
 const context = {
   operationId: "test",
@@ -326,6 +327,115 @@ describe("computer provisioning", () => {
       ).resolves.toEqual(ref);
       expect(prepare).toHaveBeenCalledWith(ref, context);
       expect(prisma.computer.updateMany).not.toHaveBeenCalled();
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records a real provider when a running fake computer is replaced", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-provider-migration-"));
+    const ref = {
+      id: "docker-bot-1",
+      botId: "bot-1",
+      kind: "docker" as const,
+      providerRef: "docker-bot-1",
+      fresh: true,
+    };
+    const update = vi.fn().mockResolvedValue({});
+    const prisma = {
+      computer: {
+        findUniqueOrThrow: vi.fn().mockResolvedValue({
+          id: "computer-1",
+          homeKey: "bot-1",
+          providerRef: "fake-bot-1",
+          kind: "fake",
+          scope: "dedicated",
+          state: "running",
+          controlLeaseId: null,
+        }),
+        update,
+      },
+    } as unknown as PrismaClient;
+    const sandbox = {
+      provision: vi.fn().mockResolvedValue(ref),
+      prepare: vi.fn().mockResolvedValue(undefined),
+    } as unknown as SandboxProvider;
+
+    try {
+      await expect(
+        provisionComputer(
+          {
+            prisma,
+            sandbox,
+            home: new LocalAgentHomeStore(dataDir),
+            jobs: {} as JobPublisher,
+            events: {} as ThreadEvents,
+            dataDir,
+          },
+          "computer-1",
+          context,
+        ),
+      ).resolves.toEqual(ref);
+      expect(update).toHaveBeenCalledWith({
+        where: { id: "computer-1" },
+        data: { providerRef: "docker-bot-1", kind: "docker" },
+      });
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("removes a fresh replacement when provider migration fails", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "rakazo-provider-migration-failure-"));
+    const ref = {
+      id: "docker-bot-1",
+      botId: "bot-1",
+      kind: "docker" as const,
+      providerRef: "docker-bot-1",
+      fresh: true,
+    };
+    const update = vi.fn();
+    const destroy = vi.fn().mockResolvedValue(undefined);
+    const releaseScreen = vi.fn().mockResolvedValue(undefined);
+    const prisma = {
+      computer: {
+        findUniqueOrThrow: vi.fn().mockResolvedValue({
+          id: "computer-1",
+          homeKey: "bot-1",
+          providerRef: "fake-bot-1",
+          kind: "fake",
+          scope: "dedicated",
+          state: "running",
+          controlLeaseId: null,
+        }),
+        update,
+      },
+    } as unknown as PrismaClient;
+    const sandbox = {
+      provision: vi.fn().mockResolvedValue(ref),
+      prepare: vi.fn().mockRejectedValue(new Error("computer image failed to start")),
+      destroy,
+      releaseScreen,
+    } as unknown as SandboxProvider;
+
+    try {
+      await expect(
+        provisionComputer(
+          {
+            prisma,
+            sandbox,
+            home: new LocalAgentHomeStore(dataDir),
+            jobs: {} as JobPublisher,
+            events: {} as ThreadEvents,
+            dataDir,
+          },
+          "computer-1",
+          context,
+        ),
+      ).rejects.toThrow("computer image failed to start");
+      expect(releaseScreen).toHaveBeenCalledWith(ref, context);
+      expect(destroy).toHaveBeenCalledWith(ref, context);
+      expect(update).not.toHaveBeenCalled();
     } finally {
       await rm(dataDir, { recursive: true, force: true });
     }

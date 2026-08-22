@@ -4,14 +4,13 @@ import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 loadRootEnv();
 
 import {
+  createAgentRuntime,
   createBackgroundJobHandlers,
   createConnectorStack,
   createJobReconciler,
   createPostgresReconciliationLeadership,
   createRunExecutor,
   createRunSandbox,
-  DevinAcpRuntime,
-  DevinAgentRuntime,
   EncryptedSecretStore,
   ExpoPushProvider,
   GraphileJobPublisher,
@@ -20,9 +19,7 @@ import {
   isComposioEnabled,
   LocalAgentHomeStore,
   LocalArtifactStore,
-  PiAgentRuntime,
   PostgresRealtimeFanout,
-  ScriptedAgentRuntime,
 } from "@rakazo/adapters";
 import { resolveEncryptionKey } from "@rakazo/core";
 import { createDb, createThreadEvents } from "@rakazo/db";
@@ -37,17 +34,10 @@ async function main() {
     publisher: pool,
   });
   const events = createThreadEvents(prisma, realtime);
-  const runtime =
-    process.env.AGENT_RUNTIME === "scripted"
-      ? new ScriptedAgentRuntime()
-      : process.env.AGENT_RUNTIME === "devin"
-        ? new DevinAgentRuntime({
-            apiKey: process.env.DEVIN_API_KEY!,
-            orgId: process.env.DEVIN_ORG_ID!,
-          })
-        : process.env.AGENT_RUNTIME === "devin-cli"
-          ? new DevinAcpRuntime()
-          : new PiAgentRuntime();
+  const runtime = createAgentRuntime(process.env.AGENT_RUNTIME ?? "pi", {
+    devinApiKey: process.env.DEVIN_API_KEY,
+    devinOrgId: process.env.DEVIN_ORG_ID,
+  });
   const dataDir = process.env.DATA_DIR ?? "./data";
   const sandbox = createRunSandbox(process.env.SANDBOX_PROVIDER ?? "docker", {
     supervisorUrl: process.env.SANDBOX_SUPERVISOR_URL ?? "http://127.0.0.1:7091",

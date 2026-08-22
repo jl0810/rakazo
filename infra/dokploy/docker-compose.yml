@@ -1,4 +1,31 @@
 services:
+  computer:
+    image: rakazo/computer:local
+    build:
+      context: ../sandboxes/computer
+    command: ["true"]
+    restart: "no"
+
+  supervisor:
+    build:
+      context: ../..
+      dockerfile: infra/sandboxes/supervisor/Dockerfile
+    environment:
+      DATA_DIR: /data
+      SUPERVISOR_HOST: "0.0.0.0"
+      SUPERVISOR_PORT: "7091"
+      DOCKER_SOCKET: /var/run/docker.sock
+      RAKAZO_COMPUTER_IMAGE: rakazo/computer:local
+      SANDBOX_SCREEN_NETWORK: internal
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
+      NODE_ENV: production
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ../../data:/data
+    depends_on:
+      computer:
+        condition: service_completed_successfully
+
   api:
     build:
       context: ../..
@@ -9,7 +36,8 @@ services:
       DATA_DIR: /data
       WAKEUP_DRIVER: graphile
       AGENT_RUNTIME: devin-cli
-      SANDBOX_PROVIDER: fake
+      SANDBOX_PROVIDER: docker
+      SANDBOX_SUPERVISOR_URL: http://supervisor:7091
       DEVIN_CLI_PATH: /usr/local/bin/devin
       DEVIN_MODEL: "${DEVIN_MODEL:-glm-5-2}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
@@ -24,6 +52,9 @@ services:
       - devin-config:/root/.config/devin
     ports:
       - "3100:3100"
+    depends_on:
+      supervisor:
+        condition: service_started
 
   worker:
     build:
@@ -35,7 +66,8 @@ services:
       DATA_DIR: /data
       WAKEUP_DRIVER: graphile
       AGENT_RUNTIME: devin-cli
-      SANDBOX_PROVIDER: fake
+      SANDBOX_PROVIDER: docker
+      SANDBOX_SUPERVISOR_URL: http://supervisor:7091
       DEVIN_CLI_PATH: /usr/local/bin/devin
       DEVIN_MODEL: "${DEVIN_MODEL:-glm-5-2}"
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET}"
@@ -45,7 +77,10 @@ services:
       - ../../data:/data
       - devin-config:/root/.config/devin
     depends_on:
-      - api
+      api:
+        condition: service_started
+      supervisor:
+        condition: service_started
 
   web:
     build:

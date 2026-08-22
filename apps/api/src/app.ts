@@ -3,14 +3,13 @@ import { RPCHandler } from "@orpc/server/fetch";
 import type { JobPublisher, RealtimeFanout, SandboxProvider } from "@rakazo/adapter-kit";
 import {
   type ComposioProvider,
+  createAgentRuntime,
   createBackgroundJobHandlers,
   createConnectorStack,
   createJobReconciler,
   createRunExecutor,
   createRunSandbox,
   type DestinationEmulator,
-  DevinAcpRuntime,
-  DevinAgentRuntime,
   destroyBot,
   EncryptedSecretStore,
   ExpoPushProvider,
@@ -20,11 +19,9 @@ import {
   isComposioEnabled,
   LocalAgentHomeStore,
   LocalArtifactStore,
-  PiAgentRuntime,
   PiOAuthLogins,
   PostgresRealtimeFanout,
   pushTokenPath,
-  ScriptedAgentRuntime,
 } from "@rakazo/adapters";
 import { blockedAuthPaths, createAuth } from "@rakazo/auth";
 import { createDb, createThreadEvents, type PrismaClient, requireMembership } from "@rakazo/db";
@@ -104,14 +101,10 @@ export async function createApp(
   const connector = stack.destination;
   await connector.start();
   void stack.composio?.warmDirectory().catch(() => undefined);
-  const runtime =
-    env.agentRuntime === "scripted"
-      ? new ScriptedAgentRuntime()
-      : env.agentRuntime === "devin"
-        ? new DevinAgentRuntime({ apiKey: env.devinApiKey!, orgId: env.devinOrgId! })
-        : env.agentRuntime === "devin-cli"
-          ? new DevinAcpRuntime()
-          : new PiAgentRuntime();
+  const runtime = createAgentRuntime(env.agentRuntime, {
+    devinApiKey: env.devinApiKey,
+    devinOrgId: env.devinOrgId,
+  });
   const notifications = new ExpoPushProvider(env.dataDir);
   const auth = createAuth(prisma, {
     secret: env.authSecret,

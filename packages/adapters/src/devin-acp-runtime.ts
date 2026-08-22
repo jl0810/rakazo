@@ -73,6 +73,10 @@ export class DevinAcpRuntime implements AgentRuntime {
     const controller = new AbortController();
     running.set(request.runId, controller);
     const signal = context.signal ?? controller.signal;
+    const model =
+      request.model.provider === "devin-cli" && request.model.id !== "scripted"
+        ? request.model.id
+        : this.model;
 
     const queue = createQueue(request.runId);
 
@@ -105,7 +109,7 @@ export class DevinAcpRuntime implements AgentRuntime {
         // 3. Spawn Devin CLI (it reads mcp_config.json at startup).
         // Note: `devin acp` ignores DEVIN_PERMISSION_MODE/DEVIN_MODE env vars —
         // the session mode is set via session/set_config_option after session/new.
-        proc = spawn(this.cliPath, ["acp", "--model", this.model], {
+        proc = spawn(this.cliPath, ["acp", "--model", model], {
           env: { ...process.env },
           stdio: ["pipe", "pipe", "pipe"],
         });
@@ -168,7 +172,6 @@ export class DevinAcpRuntime implements AgentRuntime {
               });
             }
           } else if (kind === "usage_update") {
-            const used = su.used as number;
             const meta = su._meta as
               | { "cognition.ai/inputTokens"?: number; "cognition.ai/outputTokens"?: number }
               | undefined;
@@ -177,7 +180,7 @@ export class DevinAcpRuntime implements AgentRuntime {
               inputTokens: meta?.["cognition.ai/inputTokens"] ?? 0,
               outputTokens: meta?.["cognition.ai/outputTokens"] ?? 0,
               provider: "devin-cli",
-              model: this.model,
+              model,
             });
           }
         });
@@ -229,13 +232,13 @@ export class DevinAcpRuntime implements AgentRuntime {
 
         // 6. Build and send prompt (tools are now available via MCP — no need to list them in the prompt)
         const prompt = buildAcpPrompt(request);
-        queue.push({ type: "progress", text: `Devin ACP (${this.model}) working…` });
+        queue.push({ type: "progress", text: `Devin ACP (${model}) working…` });
 
         // 7. Send prompt and wait for completion
-        const promptResult = (await rpc.request("session/prompt", {
+        await rpc.request("session/prompt", {
           sessionId: rpc.sessionId,
           prompt: [{ type: "text", text: prompt }],
-        })) as { stopReason?: string } | null;
+        });
 
         signal.removeEventListener("abort", onAbort);
 
@@ -444,23 +447,31 @@ class AcpClient {
   }
 }
 
-function buildAcpPrompt(request: AgentRunRequest): string {
+export function buildAcpPrompt(request: AgentRunRequest): string {
   const parts: string[] = [];
 
   if (request.instructions) {
-    const fixed = request.instructions
-      .replace(
-        /Connected plugins: (.+)\. Use those plugin tools when the user asks about those apps\./,
-        `Connected plugins: $1. These are available via the "${RAKAZO_MCP_SERVER_NAME}" MCP server.`,
-      )
-      // Rewrite tool references for ACP mode: tools are behind the rakazo-connectors MCP server,
-      // not available as direct functions. The agent must use mcp_call_tool to invoke them.
-      .replace(
-        /Use write_file to save files into your home \(they appear in Files\)\. Use shell to run commands in that computer\. Use remember for durable facts\. Use request_takeover when the user must type on the screen\./,
-        `Your Rakazo tools (write_file, shell, remember, request_takeover, spawn_bot, delete_bot, create_routine, list_routines, delete_routine) are available via the "${RAKAZO_MCP_SERVER_NAME}" MCP server. To call them, use mcp_call_tool with server "${RAKAZO_MCP_SERVER_NAME}" and the tool name. Use mcp_list_tools to see all available tools if unsure. These are real tools — call them, do not claim you cannot access them.`,
-      );
+    const fixed = request.instructions.replace(
+      /Connected plugins: (.+)\. Use those plugin tools when the user asks about those apps\./,
+      `Connected plugins: $1. These are available via the "${RAKAZO_MCP_SERVER_NAME}" MCP server.`,
+    );
     parts.push(fixed);
   }
+
+  const toolNames = request.tools.map((tool) => tool.name);
+  const visibleToolNames = toolNames.slice(0, 80);
+  const omittedToolCount = toolNames.length - visibleToolNames.length;
+  const toolCatalog = `${visibleToolNames.join(", ")}${
+    omittedToolCount > 0 ? `, and ${omittedToolCount} more` : ""
+  }`;
+  parts.push(
+    [
+      `Rakazo capability transport for this Devin session is the "${RAKAZO_MCP_SERVER_NAME}" MCP server.`,
+      `Available Rakazo tools (${toolNames.length}): ${toolCatalog || "none"}.`,
+      "These are Rakazo tools, not Devin skills. Never treat Devin's installed skill list as Rakazo's capability list.",
+      `Before saying a requested capability is unavailable, call mcp_list_tools for server "${RAKAZO_MCP_SERVER_NAME}". Invoke a Rakazo tool with mcp_call_tool using that server and the exact tool name.`,
+    ].join("\n"),
+  );
 
   if (request.history.length > 0) {
     const historyText = request.history

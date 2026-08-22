@@ -150,11 +150,13 @@ export async function provisionComputer(
 
 async function reconnectComputer(
   deps: {
+    prisma: PrismaClient;
     sandbox: SandboxProvider;
     home: AgentHomeStore;
     dataDir?: string;
   },
   computer: {
+    id: string;
     homeKey: string;
     providerRef: string | null;
     kind: string;
@@ -172,15 +174,41 @@ async function reconnectComputer(
     },
     context,
   );
-  await deps.sandbox.prepare(ref, context);
-  await ensureComputerWorkspaceLayout(
-    deps.sandbox,
-    ref,
-    parseComputerMode(computer.scope),
-    context.botId,
-    context,
-  );
-  return ref;
+  const replacement =
+    ref.fresh === true ||
+    !computer.providerRef ||
+    computer.providerRef !== ref.providerRef ||
+    computer.kind !== ref.kind;
+  try {
+    await deps.sandbox.prepare(ref, context);
+    if (replacement) {
+      await restoreComputerWorkspace(deps.home, deps.sandbox, computer.homeKey, ref, context);
+    }
+    await ensureComputerWorkspaceLayout(
+      deps.sandbox,
+      ref,
+      parseComputerMode(computer.scope),
+      context.botId,
+      context,
+    );
+    if (replacement) {
+      await deps.prisma.computer.update({
+        where: { id: computer.id },
+        data: { providerRef: ref.providerRef, kind: ref.kind },
+      });
+    }
+    return ref;
+  } catch (error) {
+    if (!replacement) throw error;
+    const rollbackError = await rollbackProvisionedComputer(deps.sandbox, ref, context, error);
+    if (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        "Computer provider migration failed and could not be rolled back",
+      );
+    }
+    throw error;
+  }
 }
 
 async function waitForComputerReady(

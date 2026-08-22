@@ -100,7 +100,7 @@ COPY --from=builder /app/pnpm-lock.yaml \
 ENV NODE_ENV=production
 ENV DEVIN_CLI_PATH=/usr/local/bin/devin
 ENV AGENT_RUNTIME=devin-cli
-ENV SANDBOX_PROVIDER=fake
+ENV SANDBOX_PROVIDER=docker
 ENV WAKEUP_DRIVER=graphile
 
 EXPOSE 3100 5173
