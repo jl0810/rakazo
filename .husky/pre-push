@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+
+HOOK="$HOME/Projects/platform/scripts/hooks/pre-push.sh"
+if [ ! -f "$HOOK" ]; then
+  HOOK="$(CDPATH= cd -- "$(dirname "$0")/../../platform/scripts/hooks" 2>/dev/null && pwd)/pre-push.sh"
+fi
+
+if [ -f "$HOOK" ]; then
+  exec "$HOOK" "$@"
+fi
