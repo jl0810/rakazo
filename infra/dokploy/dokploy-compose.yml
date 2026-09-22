@@ -32,7 +32,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/dokploy/Dockerfile
-    command: ["bash", "-lc", "node /app/infra/dokploy/render-mcp-config.mjs && pnpm --filter @rakazo/db exec prisma migrate deploy && pnpm --filter @rakazo/api start"]
+    command: ["bash", "-lc", "pnpm --filter @rakazo/db exec prisma migrate deploy && pnpm --filter @rakazo/api start"]
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - DATA_DIR=/data
@@ -49,11 +49,7 @@ services:
       - SIGNUPS_ENABLED=true
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - DOKPLOY_API_KEY=${DOKPLOY_API_KEY}
-      - DOKPLOY_URL=${DOKPLOY_URL}
-      - POSTGRES_MCP_URL_MAIN=${POSTGRES_MCP_URL_MAIN}
-      - POSTGRES_MCP_URL_TRADE=${POSTGRES_MCP_URL_TRADE}
-      - POSTGRES_MCP_URL_ETF=${POSTGRES_MCP_URL_ETF}
+      - COMPOSIO_API_KEY=${COMPOSIO_API_KEY}
       - NODE_ENV=production
     volumes:
       - rakazo-data:/data
@@ -80,7 +76,7 @@ services:
     build:
       context: ../..
       dockerfile: infra/dokploy/Dockerfile
-    command: ["bash", "-lc", "node /app/infra/dokploy/render-mcp-config.mjs && pnpm --filter @rakazo/worker start"]
+    command: ["pnpm", "--filter", "@rakazo/worker", "start"]
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - DATA_DIR=/data
@@ -93,11 +89,7 @@ services:
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - DOKPLOY_API_KEY=${DOKPLOY_API_KEY}
-      - DOKPLOY_URL=${DOKPLOY_URL}
-      - POSTGRES_MCP_URL_MAIN=${POSTGRES_MCP_URL_MAIN}
-      - POSTGRES_MCP_URL_TRADE=${POSTGRES_MCP_URL_TRADE}
-      - POSTGRES_MCP_URL_ETF=${POSTGRES_MCP_URL_ETF}
+      - COMPOSIO_API_KEY=${COMPOSIO_API_KEY}
       - NODE_ENV=production
     volumes:
       - rakazo-data:/data

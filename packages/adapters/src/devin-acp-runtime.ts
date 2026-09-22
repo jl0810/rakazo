@@ -1,8 +1,8 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AdapterContext,
@@ -22,8 +22,15 @@ const ADAPTERS_DIR = (() => {
 
 const WRAPPER_SCRIPT = join(ADAPTERS_DIR, "rakazo-mcp-wrapper.mjs");
 
-const DEVIN_MCP_CONFIG = join(homedir(), ".config", "devin", "mcp_config.json");
 const RAKAZO_MCP_SERVER_NAME = "rakazo-connectors";
+const DEVIN_CHILD_ENV_ALLOWLIST = [
+  "LANG",
+  "LC_ALL",
+  "SSL_CERT_DIR",
+  "SSL_CERT_FILE",
+  "TERM",
+  "TZ",
+] as const;
 
 const running = new Map<string, AbortController>();
 
@@ -78,19 +85,33 @@ export class DevinAcpRuntime implements AgentRuntime {
         ? request.model.id
         : this.model;
 
-    const queue = createQueue(request.runId);
+    const queue = createQueue();
 
     const work = (async () => {
       let proc: ChildProcess | null = null;
       let toolExecutor: { port: number; close: () => void } | null = null;
-      let sessionFilePath: string | null = null;
+      const runtimeDir = devinRuntimeDirectory(request.runId);
+      const workspaceDir = join(runtimeDir, "workspace");
+      const sessionFilePath = join(runtimeDir, "mcp-session.json");
+      const mcpConfigPath = join(runtimeDir, "config", "devin", "mcp_config.json");
 
       try {
+        for (const directory of [
+          workspaceDir,
+          join(runtimeDir, "home"),
+          join(runtimeDir, "tmp"),
+          join(runtimeDir, "cache"),
+          join(runtimeDir, "state"),
+        ]) {
+          mkdirSync(directory, { recursive: true });
+        }
+
         // 1. Start temporary HTTP server for tool execution (before spawning CLI)
         toolExecutor = await startToolExecutor(request);
 
-        // 2. Write per-session MCP config file and update Devin's MCP config (before spawning CLI)
-        sessionFilePath = `/tmp/rakazo-mcp-session-${request.runId}.json`;
+        // 2. Write a per-run MCP config containing only Rakazo's brokered tools.
+        // Never merge the host's global Devin configuration: it may contain
+        // infrastructure-admin MCP servers that user bots must not inherit.
         if (request.tools.length > 0) {
           writeFileSync(
             sessionFilePath,
@@ -103,39 +124,30 @@ export class DevinAcpRuntime implements AgentRuntime {
               executorUrl: `http://127.0.0.1:${toolExecutor.port}/execute`,
             }),
           );
-          ensureMcpConfig(sessionFilePath);
+          writeRakazoMcpConfig(mcpConfigPath, sessionFilePath);
         }
 
-        // 3. Spawn Devin CLI (it reads mcp_config.json at startup).
-        // Note: `devin acp` ignores DEVIN_PERMISSION_MODE/DEVIN_MODE env vars —
-        // the session mode is set via session/set_config_option after session/new.
+        // 3. Spawn Devin with an allowlisted environment and isolated HOME/XDG
+        // directories. Application, database, connector, and deployment secrets
+        // are deliberately excluded from the provider child process.
         proc = spawn(this.cliPath, ["acp", "--model", model], {
-          env: { ...process.env },
+          cwd: workspaceDir,
+          env: buildDevinChildEnv(process.env, runtimeDir, model),
           stdio: ["pipe", "pipe", "pipe"],
         });
 
-        // Capture Devin stderr for debugging MCP connection issues
-        const logFile = `/tmp/devin-stderr-${request.runId}.log`;
-        proc.stderr?.on("data", (data: Buffer) => {
-          try {
-            writeFileSync(logFile, data, { flag: "a" });
-          } catch {}
-        });
+        // Drain stderr without persisting model prompts, credentials, or tool data.
+        proc.stderr?.resume();
 
-        const rpc = new AcpClient(proc, request.runId);
+        const rpc = new AcpClient(
+          proc,
+          request.tools.map((tool) => tool.name),
+        );
 
         // Register update handler immediately — messages arrive as soon as the process spawns
         rpc.onUpdate((update) => {
           const su = update.params.update as Record<string, unknown>;
           const kind = su.sessionUpdate as string;
-          try {
-            writeFileSync(
-              `/tmp/devin-onupdate-${request.runId}.log`,
-              `${Date.now()} onUpdate: kind=${kind}\n`,
-              { flag: "a" },
-            );
-          } catch {}
-
           if (kind === "agent_message_chunk") {
             const content = su.content as { type: string; text: string };
             if (content?.text) queue.push({ type: "text", text: content.text });
@@ -204,12 +216,10 @@ export class DevinAcpRuntime implements AgentRuntime {
           return;
         }
 
-        // 5. Create session scoped to this bot's home directory so the agent's
-        // workspace is the bot's own files, not the Rakazo repo or the user's Mac home.
-        const botHomeDir = resolve(process.env.DATA_DIR ?? "./data", "homes", request.botId);
-        mkdirSync(botHomeDir, { recursive: true });
+        // 5. The provider runtime gets an empty per-run workspace. Bot files are
+        // available only through Rakazo's authorized file and sandbox tools.
         const sessionResult = (await rpc.request("session/new", {
-          cwd: botHomeDir,
+          cwd: workspaceDir,
           mcpServers: [],
         })) as { sessionId?: string } | null;
 
@@ -221,13 +231,12 @@ export class DevinAcpRuntime implements AgentRuntime {
 
         rpc.sessionId = sessionResult.sessionId;
 
-        // 5b. ACP sessions start in accept-edits mode, which prompts for exec tool
-        // calls and stalls headless runs. Bypass is the only unattended mode available
-        // over ACP (no --sandbox support), so set it explicitly.
+        // Keep Devin in its least-permissive unattended mode. Permission requests
+        // are accepted only for the per-run Rakazo MCP bridge below.
         await rpc.request("session/set_config_option", {
           sessionId: rpc.sessionId,
           configId: "mode",
-          value: "bypass",
+          value: "auto",
         });
 
         // 6. Build and send prompt (tools are now available via MCP — no need to list them in the prompt)
@@ -257,11 +266,7 @@ export class DevinAcpRuntime implements AgentRuntime {
       } finally {
         proc?.kill("SIGTERM");
         toolExecutor?.close();
-        if (sessionFilePath) {
-          try {
-            unlinkSync(sessionFilePath);
-          } catch {}
-        }
+        rmSync(runtimeDir, { recursive: true, force: true });
         queue.close();
       }
     })();
@@ -291,13 +296,13 @@ class AcpClient {
   private updateHandler: ((notification: JsonRpcNotification) => void) | null = null;
   private idleResolve: (() => void) | null = null;
   private buffer = "";
-  private runId: string;
+  private allowedToolNames: Set<string>;
 
   sessionId: string | null = null;
 
-  constructor(proc: ChildProcess, runId: string) {
+  constructor(proc: ChildProcess, allowedToolNames: string[]) {
     this.proc = proc;
-    this.runId = runId;
+    this.allowedToolNames = new Set(allowedToolNames);
     this.proc.stdout?.on("data", (data: Buffer) => {
       this.buffer += data.toString();
       this.processBuffer();
@@ -316,13 +321,6 @@ class AcpClient {
       if (!trimmed) continue;
       try {
         const msg = JSON.parse(trimmed);
-        try {
-          writeFileSync(
-            `/tmp/devin-acp-messages-${this.runId}.jsonl`,
-            JSON.stringify({ receivedAt: Date.now(), ...msg }) + "\n",
-            { flag: "a" },
-          );
-        } catch {}
         this.handleMessage(msg);
       } catch {
         // Not JSON, skip
@@ -333,32 +331,23 @@ class AcpClient {
   private handleMessage(msg: Record<string, unknown>) {
     const hasMethod = typeof msg.method === "string";
     const hasId = msg.id !== undefined && msg.id !== null;
-    try {
-      writeFileSync(
-        `/tmp/devin-handle-${this.runId}.log`,
-        `${Date.now()} handle: method=${msg.method ?? "none"} hasMethod=${hasMethod} hasId=${hasId} updateHandler=${!!this.updateHandler}\n`,
-        { flag: "a" },
-      );
-    } catch {}
 
     if (hasMethod && hasId) {
       // Server is sending us a request
       if (msg.method === "session/request_permission") {
         const params = msg.params as {
           sessionId?: string;
-          toolCall?: { toolCallId?: string };
+          toolCall?: Record<string, unknown> & { toolCallId?: string };
           options?: Array<{ optionId: string }>;
         };
-        const allowAlways = params.options?.find((o) => o.optionId === "allow_server_always");
-        const allowSession = params.options?.find((o) => o.optionId === "allow_server_session");
-        const selected = allowAlways ?? allowSession ?? params.options?.[0];
         this.respond(msg.id, {
           sessionId: params.sessionId,
           toolCallId: params.toolCall?.toolCallId,
-          outcome: {
-            outcome: "selected",
-            optionId: selected?.optionId ?? "allow_once",
-          },
+          outcome: selectPermissionOutcome(
+            params.toolCall,
+            params.options ?? [],
+            this.allowedToolNames,
+          ),
         });
       } else if (msg.method === "session/update") {
         this.updateHandler?.(msg as JsonRpcNotification);
@@ -381,41 +370,21 @@ class AcpClient {
         }
       }
     } else if (hasMethod && msg.method === "session/update") {
-      try {
-        writeFileSync(
-          `/tmp/devin-update-call-${this.runId}.log`,
-          `${Date.now()} calling updateHandler: handler=${!!this.updateHandler}\n`,
-          { flag: "a" },
-        );
-      } catch {}
       this.updateHandler?.(msg as JsonRpcNotification);
     }
   }
 
   respond(id: unknown, result: Record<string, unknown>): void {
     const resp: JsonRpcResponse = { jsonrpc: "2.0", id: id as number, result };
-    this.proc.stdin?.write(JSON.stringify(resp) + "\n");
+    this.proc.stdin?.write(`${JSON.stringify(resp)}\n`);
   }
 
   request(method: string, params: Record<string, unknown>): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
       const req: JsonRpcRequest = { jsonrpc: "2.0", id, method, params };
-      try {
-        writeFileSync(
-          `/tmp/devin-acp-messages-${this.runId}.jsonl`,
-          JSON.stringify({
-            sentAt: Date.now(),
-            direction: "out",
-            method,
-            id,
-            paramsPreview: JSON.stringify(params).slice(0, 2000),
-          }) + "\n",
-          { flag: "a" },
-        );
-      } catch {}
       this.pending.set(id, { resolve, reject });
-      this.proc.stdin?.write(JSON.stringify(req) + "\n");
+      this.proc.stdin?.write(`${JSON.stringify(req)}\n`);
 
       // Timeout after 120 seconds
       setTimeout(() => {
@@ -429,7 +398,7 @@ class AcpClient {
 
   notify(method: string, params: Record<string, unknown>): void {
     const notif: JsonRpcNotification = { jsonrpc: "2.0", method, params };
-    this.proc.stdin?.write(JSON.stringify(notif) + "\n");
+    this.proc.stdin?.write(`${JSON.stringify(notif)}\n`);
   }
 
   onUpdate(handler: (notification: JsonRpcNotification) => void): void {
@@ -469,6 +438,7 @@ export function buildAcpPrompt(request: AgentRunRequest): string {
       `Rakazo capability transport for this Devin session is the "${RAKAZO_MCP_SERVER_NAME}" MCP server.`,
       `Available Rakazo tools (${toolNames.length}): ${toolCatalog || "none"}.`,
       "These are Rakazo tools, not Devin skills. Never treat Devin's installed skill list as Rakazo's capability list.",
+      "Do not inspect Devin skill directories, global MCP configuration, or /app to determine Rakazo capabilities. Call list_capabilities through Rakazo instead.",
       `Before saying a requested capability is unavailable, call mcp_list_tools for server "${RAKAZO_MCP_SERVER_NAME}". Invoke a Rakazo tool with mcp_call_tool using that server and the exact tool name.`,
     ].join("\n"),
   );
@@ -486,36 +456,82 @@ export function buildAcpPrompt(request: AgentRunRequest): string {
   return parts.join("\n\n");
 }
 
-function ensureMcpConfig(sessionFilePath: string): void {
-  try {
-    const configDir = dirname(DEVIN_MCP_CONFIG);
-    if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true });
+export function devinRuntimeDirectory(runId: string, root = "/tmp"): string {
+  const safeRunId = runId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 120) || "run";
+  return join(root, `rakazo-devin-${safeRunId}`);
+}
 
-    let config: { mcpServers?: Record<string, unknown> } = {};
-    if (existsSync(DEVIN_MCP_CONFIG)) {
-      try {
-        config = JSON.parse(readFileSync(DEVIN_MCP_CONFIG, "utf-8"));
-      } catch {
-        config = {};
-      }
-    }
-
-    if (!config.mcpServers) config.mcpServers = {};
-
-    // Always update (session file path changes per run)
-    // NOTE: Devin's mcp_config.json env format is a plain object,
-    // not the ACP protocol's array of {name, value} objects.
-    config.mcpServers[RAKAZO_MCP_SERVER_NAME] = {
-      command: process.execPath,
-      args: [WRAPPER_SCRIPT],
-      env: {
-        RAKAZO_MCP_SESSION_FILE: sessionFilePath,
-      },
-    };
-    writeFileSync(DEVIN_MCP_CONFIG, JSON.stringify(config, null, 2));
-  } catch (err) {
-    process.stderr.write(`[devin-acp] Failed to update MCP config: ${err}\n`);
+export function buildDevinChildEnv(
+  source: NodeJS.ProcessEnv,
+  runtimeDir: string,
+  model: string,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const name of DEVIN_CHILD_ENV_ALLOWLIST) {
+    if (source[name]) env[name] = source[name];
   }
+  return {
+    ...env,
+    PATH: "/usr/local/bin:/usr/bin:/bin",
+    HOME: join(runtimeDir, "home"),
+    TMPDIR: join(runtimeDir, "tmp"),
+    XDG_CACHE_HOME: join(runtimeDir, "cache"),
+    XDG_CONFIG_HOME: join(runtimeDir, "config"),
+    XDG_STATE_HOME: join(runtimeDir, "state"),
+    // Devin authentication is isolated from application credentials and is the
+    // only persistent provider state inherited by the child process.
+    XDG_DATA_HOME: source.DEVIN_XDG_DATA_HOME ?? join(homedir(), ".local", "share"),
+    DEVIN_MODEL: model,
+    DEVIN_PERMISSION_MODE: "auto",
+  };
+}
+
+export function writeRakazoMcpConfig(configPath: string, sessionFilePath: string): void {
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(
+    configPath,
+    JSON.stringify(
+      {
+        mcpServers: {
+          [RAKAZO_MCP_SERVER_NAME]: {
+            command: process.execPath,
+            args: [WRAPPER_SCRIPT],
+            env: { RAKAZO_MCP_SESSION_FILE: sessionFilePath },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+export function selectPermissionOutcome(
+  toolCall: Record<string, unknown> | undefined,
+  options: Array<{ optionId: string }>,
+  allowedToolNames: ReadonlySet<string>,
+): { outcome: "selected"; optionId: string } | { outcome: "cancelled" } {
+  const title = typeof toolCall?.title === "string" ? toolCall.title : "";
+  const rawInput =
+    toolCall?.rawInput && typeof toolCall.rawInput === "object"
+      ? JSON.stringify(toolCall.rawInput)
+      : "";
+  const isRakazoCall =
+    title.includes(RAKAZO_MCP_SERVER_NAME) ||
+    rawInput.includes(RAKAZO_MCP_SERVER_NAME) ||
+    [...allowedToolNames].some((name) => title === name || title.endsWith(` ${name}`));
+
+  if (isRakazoCall) {
+    const allow =
+      options.find((option) => option.optionId === "allow_server_session") ??
+      options.find((option) => option.optionId === "allow_once");
+    return allow ? { outcome: "selected", optionId: allow.optionId } : { outcome: "cancelled" };
+  }
+
+  const reject = options.find(
+    (option) => option.optionId.includes("reject") || option.optionId.includes("deny"),
+  );
+  return reject ? { outcome: "selected", optionId: reject.optionId } : { outcome: "cancelled" };
 }
 
 function startToolExecutor(request: AgentRunRequest): Promise<{ port: number; close: () => void }> {
@@ -559,7 +575,7 @@ function startToolExecutor(request: AgentRunRequest): Promise<{ port: number; cl
 
 type QueueItem = AgentRuntimeEvent;
 
-function createQueue(runId: string) {
+function createQueue() {
   const items: QueueItem[] = [];
   let wake: (() => void) | undefined;
   let closed = false;
@@ -567,57 +583,22 @@ function createQueue(runId: string) {
   return {
     push(item: QueueItem) {
       items.push(item);
-      try {
-        writeFileSync(
-          `/tmp/devin-queue-${runId}.log`,
-          `${Date.now()} push: type=${item.type} items=${items.length} wake=${!!wake}\n`,
-          { flag: "a" },
-        );
-      } catch {}
       wake?.();
     },
     close() {
       closed = true;
-      try {
-        writeFileSync(
-          `/tmp/devin-queue-${runId}.log`,
-          `${Date.now()} close: items=${items.length}\n`,
-          { flag: "a" },
-        );
-      } catch {}
       wake?.();
     },
     async *iterate(): AsyncGenerator<AgentRuntimeEvent> {
       while (!closed || items.length) {
         if (items.length) {
           const item = items.shift()!;
-          try {
-            writeFileSync(
-              `/tmp/devin-queue-${runId}.log`,
-              `${Date.now()} yield: type=${item.type} remaining=${items.length}\n`,
-              { flag: "a" },
-            );
-          } catch {}
           yield item;
           continue;
         }
-        try {
-          writeFileSync(
-            `/tmp/devin-queue-${runId}.log`,
-            `${Date.now()} waiting: closed=${closed}\n`,
-            { flag: "a" },
-          );
-        } catch {}
         await new Promise<void>((resolve) => {
           wake = resolve;
         });
-        try {
-          writeFileSync(
-            `/tmp/devin-queue-${runId}.log`,
-            `${Date.now()} woken: items=${items.length} closed=${closed}\n`,
-            { flag: "a" },
-          );
-        } catch {}
       }
     },
   };

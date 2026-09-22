@@ -52,6 +52,10 @@ the deployment default when no model credential is selected, but it is still pro
 configured OpenAI, Anthropic, OpenRouter, and other Pi providers run through the native loop. Only
 Devin requests use the internal MCP bridge required by Devin ACP. In both cases Rakazo—not the model
 provider—owns the computer, tools, bots, routines, memory, taught skills, and connected plugins.
+Each Devin run receives an isolated working directory, an allowlisted environment, and a generated
+MCP configuration containing only the Rakazo bridge. Database, deployment, and connector credentials
+stay in the API/worker processes. Agents should call `list_capabilities` for Rakazo's canonical tool,
+saved-skill, installed-capability, and connected-integration inventory.
 
 ## Choosing a computer provider
 

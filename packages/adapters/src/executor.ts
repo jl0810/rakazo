@@ -105,6 +105,7 @@ const READ_ONLY_AGENT_TOOLS = new Set([
   "request_takeover",
   "run_subagent",
   "list_routines",
+  "list_capabilities",
 ]);
 const MAX_MODEL_FILE_BYTES = 250_000;
 const GRAPHICAL_AGENT_TOOLS = new Set([
@@ -341,30 +342,43 @@ export function createRunExecutor(deps: ExecutorDeps) {
 
       const runSecrets = [...deps.secrets];
       try {
-        const [bot, thread, messages, task, storedConnections, credential, settings, savedSkills] =
-          await Promise.all([
-            deps.prisma.bot.findUniqueOrThrow({
-              where: { id: run.botId },
-              include: { computer: true },
-            }),
-            deps.prisma.thread.findUniqueOrThrow({ where: { id: run.threadId } }),
-            deps.prisma.message.findMany({
-              where: { threadId: run.threadId },
-              orderBy: { seq: "desc" },
-              take: LEGACY_HISTORY_WINDOW_SIZE,
-              select: { role: true, runId: true, blocks: true },
-            }),
-            deps.prisma.task.findUniqueOrThrow({ where: { id: run.taskId } }),
-            deps.prisma.connection.findMany({
-              where: { userId: run.userId, workspaceId: run.workspaceId },
-              select: { id: true, provider: true, displayName: true, status: true },
-            }),
-            findDefaultModelCredential(deps.prisma, run),
-            deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
-            deps.prisma.taughtSkill.findMany({
-              where: { botId: run.botId, workspaceId: run.workspaceId, status: "saved" },
-            }),
-          ]);
+        const [
+          bot,
+          thread,
+          messages,
+          task,
+          storedConnections,
+          credential,
+          settings,
+          savedSkills,
+          installedCapabilities,
+        ] = await Promise.all([
+          deps.prisma.bot.findUniqueOrThrow({
+            where: { id: run.botId },
+            include: { computer: true },
+          }),
+          deps.prisma.thread.findUniqueOrThrow({ where: { id: run.threadId } }),
+          deps.prisma.message.findMany({
+            where: { threadId: run.threadId },
+            orderBy: { seq: "desc" },
+            take: LEGACY_HISTORY_WINDOW_SIZE,
+            select: { role: true, runId: true, blocks: true },
+          }),
+          deps.prisma.task.findUniqueOrThrow({ where: { id: run.taskId } }),
+          deps.prisma.connection.findMany({
+            where: { userId: run.userId, workspaceId: run.workspaceId },
+            select: { id: true, provider: true, displayName: true, status: true },
+          }),
+          findDefaultModelCredential(deps.prisma, run),
+          deps.prisma.deploymentSettings.findUnique({ where: { id: "default" } }),
+          deps.prisma.taughtSkill.findMany({
+            where: { botId: run.botId, workspaceId: run.workspaceId, status: "saved" },
+          }),
+          deps.prisma.capabilityInstall.findMany({
+            where: { userId: run.userId, workspaceId: run.workspaceId },
+            orderBy: { createdAt: "asc" },
+          }),
+        ]);
         runAbortController = new AbortController();
         if (!leaseValid) runAbortController.abort();
         let liveSlugs: string[] = [];
@@ -473,6 +487,19 @@ export function createRunExecutor(deps: ExecutorDeps) {
             (tool) => !builtinAgentTools.some((builtin) => builtin.name === tool.name),
           ),
         ];
+        console.info(
+          `[capabilities] ${JSON.stringify({
+            runId,
+            builtInTools: builtins.length,
+            connectedIntegrations: connectedPlugins.length,
+            discoveredIntegrationTools: discovered.length,
+            savedSkills: savedSkills.length,
+            installedCapabilities: installedCapabilities.length,
+            totalTools: tools.length,
+            composioConfigured: Boolean(deps.listConnectedPluginSlugs),
+            transport: "rakazo-connectors",
+          })}`,
+        );
         const computerInstruction = graphical
           ? "You have a persistent computer. Use computer_observe and computer_act for its visible desktop, including browsers and installed applications. Use open_path and launch_app to open graphical files, URLs, and applications. Use the file tools and shell for precise filesystem and terminal work. On a Team Computer you have your own screen; other Team bots may run at the same time on theirs. Another user may interact with your screen while you run, so re-observe when it may have changed."
           : "You have a persistent sandbox filesystem and shell. This backend does not provide model-visible graphical control, so use the file tools and shell.";
@@ -731,6 +758,27 @@ export function createRunExecutor(deps: ExecutorDeps) {
             );
             return finish({ ok: true });
           }
+          if (name === "list_capabilities") {
+            return {
+              source: "rakazo",
+              note: "This is the canonical inventory. Model-provider skills and host MCP servers are not Rakazo capabilities.",
+              tools: tools.map((tool) => ({ name: tool.name, description: tool.description })),
+              savedSkills: savedSkills.map((skill) => ({
+                name: skill.name || skill.goal.slice(0, 80),
+                whenToUse: parsePlaybook(skill.playbook).whenToUse || skill.goal,
+              })),
+              installedCapabilities: installedCapabilities.map((capability) => ({
+                kind: capability.kind,
+                name: capability.name,
+                version: capability.version,
+              })),
+              connectedIntegrations: connectedPlugins.map((plugin) => ({
+                name: plugin.displayName,
+                provider: plugin.provider,
+              })),
+              composioConfigured: Boolean(deps.listConnectedPluginSlugs),
+            };
+          }
           if (name === "request_takeover") return { ok: true };
           if (name === "create_routine") {
             const routineName = String(args.name ?? "").trim();
@@ -943,6 +991,13 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   "\n",
                 )}\nWhen the user asks to run a taught skill by name, follow that skill's playbook exactly. The full playbook is included in the user task when they invoke it.`
             : undefined;
+        const installedCapabilitiesLine =
+          installedCapabilities.length > 0
+            ? `Installed Rakazo capabilities:\n${installedCapabilities
+                .slice(0, 30)
+                .map((capability) => `- ${capability.name} (${capability.kind})`)
+                .join("\n")}`
+            : "No additional Rakazo capabilities are installed.";
         const taskPrompt = [task.prompt, attachedFilesPrompt].filter(Boolean).join("\n\n");
         const invokedSkill = savedSkills.find((skill) =>
           promptInvokesSkill(taskPrompt, skill.name || skill.goal),
@@ -975,6 +1030,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 "When the user asks for recurring or scheduled work (nightly, every morning, weekly), call create_routine with a clear prompt and cron schedule instead of doing the work once. Use list_routines to check what already exists and delete_routine only when the user asks.",
                 pluginLine,
                 taughtSkillsLine,
+                installedCapabilitiesLine,
                 "Never print API keys, access tokens, or secret values. Prefer tools over claiming you already did the work.",
               ]
                 .filter((instruction): instruction is string => Boolean(instruction))

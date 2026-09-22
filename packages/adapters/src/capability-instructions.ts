@@ -13,6 +13,9 @@ export function rakazoCapabilityInstruction(tools: readonly ConnectorTool[]): st
     "Rakazo owns your capabilities; the selected model provider only supplies reasoning.",
     `Rakazo tools available in this run (${names.length}): ${catalog || "none"}.`,
     "Rakazo tools are separate from any model runtime's installed skills. Never use a runtime skill list as evidence that a Rakazo capability is unavailable. Use a matching Rakazo tool before claiming you cannot perform an action.",
+    names.includes("list_capabilities")
+      ? "When asked what skills, plugins, integrations, or tools are available, call list_capabilities and report its canonical Rakazo inventory. Do not inspect provider skill directories, global MCP configuration, or the application container."
+      : "Do not inspect provider skill directories, global MCP configuration, or the application container to infer Rakazo capabilities.",
     graphical
       ? "For sites that require login, never ask for or extract raw passwords, cookies, or session tokens. Call request_takeover so the user signs in directly on the persistent computer, then continue with computer_observe and computer_act using that browser session."
       : "Never ask the user to paste passwords, cookies, session tokens, or other credentials into chat or workspace files.",

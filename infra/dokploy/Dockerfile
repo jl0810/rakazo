@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# STAGE 1 — tools: Devin CLI + uv + dokploy-mcp (built once, copied to runner)
+# STAGE 1 — tools: Devin CLI (built once, copied to runner)
 # Using full bookworm here because the Devin installer needs bash + curl + git.
 # ─────────────────────────────────────────────────────────────────────────────
 FROM node:22-bookworm AS tools
@@ -9,21 +9,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv (provides uvx for postgres-mcp)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.local/bin:$PATH"
-
 # Install Devin CLI — strip interactive setup call from installer
 RUN curl -fsSL https://cli.devin.ai/install.sh -o /tmp/devin-install.sh \
     && sed -i 's|.*COMPILED_BIN_NAME. setup||g' /tmp/devin-install.sh \
     && bash /tmp/devin-install.sh \
     && rm /tmp/devin-install.sh \
     && ln -sf /root/.local/bin/devin /usr/local/bin/devin
-
-# Build dokploy-mcp from local copy
-COPY infra/dokploy/dokploy-mcp/ /opt/dokploy-mcp/
-RUN corepack enable && cd /opt/dokploy-mcp && npm install && npm run build \
-    && chmod 755 build/index.js
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STAGE 2 — deps: install ALL workspace deps (cached layer, invalidated only
@@ -40,7 +31,6 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json tsconfig.base.js
 COPY packages/ ./packages/
 COPY apps/ ./apps/
 COPY infra/sandboxes/ ./infra/sandboxes/
-COPY infra/dokploy/dokploy-mcp/ ./infra/dokploy/dokploy-mcp/
 
 RUN pnpm install --frozen-lockfile=false
 
@@ -67,19 +57,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git python3 python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy uv + Devin CLI from tools stage (no re-download)
-COPY --from=tools /root/.local/bin/uv /root/.local/bin/uv
-COPY --from=tools /root/.local/bin/uvx /root/.local/bin/uvx
+# Copy Devin CLI from tools stage (no re-download)
 COPY --from=tools /root/.local/bin/devin /root/.local/bin/devin
-COPY --from=tools /opt/dokploy-mcp /opt/dokploy-mcp
 ENV PATH="/root/.local/bin:$PATH"
 RUN ln -sf /root/.local/bin/devin /usr/local/bin/devin
-
-# Devin MCP config template — rendered with real credentials at container
-# start by infra/dokploy/render-mcp-config.mjs (see compose command)
-RUN mkdir -p /root/.config/devin
-COPY infra/dokploy/mcp_config.template.json /root/.config/devin/mcp_config.template.json
-COPY infra/dokploy/render-mcp-config.mjs /app/infra/dokploy/render-mcp-config.mjs
 
 # Enable pnpm (needed to run `pnpm --filter ... start`)
 RUN corepack enable

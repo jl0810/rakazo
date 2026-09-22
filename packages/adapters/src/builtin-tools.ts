@@ -151,6 +151,12 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "list_capabilities",
+    description:
+      "Return the canonical Rakazo capability inventory for this bot: callable tools, saved taught skills, installed capabilities, connected integrations, and whether the Composio integration broker is configured. Use this instead of inspecting the model provider's skills or filesystem.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "create_routine",
     description:
       "Create a recurring scheduled job for this bot. When the cron schedule fires, the prompt is sent to this bot as a new task in its own thread. Use this when the user asks for recurring or scheduled work (e.g. 'every morning', 'nightly', 'every Monday'). Confirm the schedule with the user if it is ambiguous.",
