@@ -35,7 +35,10 @@ This repo is developed across two Macs via GitHub. Follow this exactly.
 ### Deployment
 There is no CI/CD on GitHub. Dokploy watches this repo and auto-deploys when
 `main` is pushed. Pushing `wip/*` branches is safe — Dokploy ignores them.
-Pushing to `main` triggers a production deploy.
+`main` is the staging branch. Every push to it auto-deploys the app, and the
+QA & merge routine squash-merges PRs into it once they pass its full review
+(clean install, typecheck, lint, tests, both Husky hooks). A merge to `main` is
+a staging release, not a final sign-off: a bad one is fixed by a revert PR.
 
 ### Husky hooks
 Before committing, read `.husky/pre-commit` (and `.husky/pre-push`,
